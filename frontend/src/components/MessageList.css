@@ -1,0 +1,27 @@
+.message-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.message-list:empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: #6c757d;
+  font-style: italic;
+}
+
+.message-list:empty::after {
+  content: "Начните разговор, отправив первое сообщение";
+}
+
+.message-spacer {
+  height: 80px;
+  min-height: 80px;
+  flex-shrink: 0;
+} 

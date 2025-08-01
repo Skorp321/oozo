@@ -1,0 +1,83 @@
+services:
+  postgres-pgvector:
+    image: ankane/pgvector:latest
+    environment:
+      POSTGRES_USER: rag_user
+      POSTGRES_PASSWORD: rag_password
+      POSTGRES_DB: rag_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag_user -d rag_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rag-net
+
+  rag-app:
+    build:
+      context: ./rad_project
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg2://rag_user:rag_password@postgres-pgvector:5432/rag_db
+      EMBEDDING_MODEL_NAME: intfloat/e5-base-v2
+      EMBEDDING_DEVICE: cpu
+      LLM_MODEL_NAME: mistral-small
+      LLM_API_KEY: ${MISTRAL_API_KEY}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY}
+      LLM_TEMPERATURE: 0.2
+      VECTOR_STORE_COLLECTION_NAME: rag_collection
+      CHUNK_SIZE: 512
+      CHUNK_OVERLAP: 64
+      SIMILARITY_SEARCH_K: 5
+      LOG_LEVEL: INFO
+      APP_PORT: 8000
+      # Увеличенные таймауты для загрузки моделей
+      HF_HUB_DOWNLOAD_TIMEOUT: 300
+      TRANSFORMERS_CACHE: /app/models
+      HF_HOME: /app/models
+      EMBEDDING_FALLBACK_MODEL: sentence-transformers/all-MiniLM-L6-v2
+    depends_on:
+      postgres-pgvector:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./rad_project/documents:/app/documents
+      - model_cache:/app/models
+      - rag_logs:/app/logs
+    networks:
+      - rag-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      REACT_APP_API_BASE_URL: http://rag-app:8000
+    depends_on:
+      - rag-app
+    ports:
+      - "3000:3000"
+    networks:
+      - rag-net
+
+volumes:
+  pgdata:
+  model_cache:
+  rag_logs:
+
+networks:
+  rag-net:
+    driver: bridge 

@@ -1,0 +1,28 @@
+/* Сброс стилей */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+html, body, #root {
+  height: 100%;
+  font-family: 'Segoe UI', 'Arial', sans-serif;
+  background: #f6f7fb;
+}
+
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.main-content {
+  width: 100%;
+  height: 100vh;
+}
+
+@media (max-width: 800px) {
+  .app-container {
+    flex-direction: column;
+  }
+} 

@@ -1,0 +1,8 @@
+init-db.py
+.env
+rad_project/.env
+rad_project/config/settings.py
+*.txt
+*.sql
+rad_project/documents
+*.pyc
