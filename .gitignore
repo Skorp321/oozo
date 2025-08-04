@@ -1,8 +1,6 @@
-init-db.py
+.qodo/
+.venv/
+backend/models/multilingual-e5-large/
+docs/
 .env
-rad_project/.env
-rad_project/config/settings.py
-*.txt
-*.sql
-rad_project/documents
-*.pyc
+frontend/node_modules/

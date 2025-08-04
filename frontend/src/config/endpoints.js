@@ -14,6 +14,6 @@ export const getBaseUrl = () => {
     return '';
   }
   
-  // В production используем переменную окружения или пустую строку
-  return process.env.REACT_APP_API_BASE_URL || '';
+  // В production используем переменную окружения или IP адрес бэкенда
+  return process.env.REACT_APP_API_BASE_URL || 'http://10.77.160.35:8000';
 }; 

@@ -158,6 +158,160 @@
   font-weight: 500;
 }
 
+/* Markdown Styles */
+.markdown-h1 {
+  font-size: 1.5em;
+  font-weight: bold;
+  margin: 0.5em 0;
+  color: inherit;
+}
+
+.markdown-h2 {
+  font-size: 1.3em;
+  font-weight: bold;
+  margin: 0.4em 0;
+  color: inherit;
+}
+
+.markdown-h3 {
+  font-size: 1.1em;
+  font-weight: bold;
+  margin: 0.3em 0;
+  color: inherit;
+}
+
+.markdown-h4, .markdown-h5, .markdown-h6 {
+  font-size: 1em;
+  font-weight: bold;
+  margin: 0.2em 0;
+  color: inherit;
+}
+
+.markdown-p {
+  margin: 0.5em 0;
+  line-height: 1.5;
+}
+
+.markdown-strong {
+  font-weight: bold;
+  color: inherit;
+}
+
+.markdown-em {
+  font-style: italic;
+  color: inherit;
+}
+
+.markdown-link {
+  color: #3182ce;
+  text-decoration: underline;
+}
+
+.markdown-link:hover {
+  color: #2c5aa0;
+}
+
+.markdown-blockquote {
+  border-left: 4px solid #e2e8f0;
+  margin: 0.5em 0;
+  padding: 0.5em 1em;
+  background: rgba(226, 232, 240, 0.3);
+  border-radius: 0 4px 4px 0;
+}
+
+.markdown-ul, .markdown-ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.markdown-li {
+  margin: 0.2em 0;
+  line-height: 1.4;
+}
+
+.markdown-code-block {
+  background: #2d3748;
+  color: #e2e8f0;
+  padding: 1em;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+.markdown-inline-code {
+  background: rgba(45, 55, 72, 0.1);
+  color: #2d3748;
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9em;
+}
+
+.markdown-pre {
+  margin: 0.5em 0;
+}
+
+.markdown-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0;
+  font-size: 0.9em;
+}
+
+.markdown-th, .markdown-td {
+  border: 1px solid #e2e8f0;
+  padding: 0.5em;
+  text-align: left;
+}
+
+.markdown-th {
+  background: rgba(226, 232, 240, 0.5);
+  font-weight: bold;
+}
+
+.markdown-thead {
+  background: rgba(226, 232, 240, 0.3);
+}
+
+.markdown-tbody tr:nth-child(even) {
+  background: rgba(247, 250, 252, 0.5);
+}
+
+/* Source content specific styles */
+.source-code {
+  font-size: 0.85em;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* Dark theme adjustments for user messages */
+.message-row.user .markdown-link {
+  color: #90cdf4;
+}
+
+.message-row.user .markdown-link:hover {
+  color: #63b3ed;
+}
+
+.message-row.user .markdown-inline-code {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.message-row.user .markdown-code-block {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.message-row.user .markdown-blockquote {
+  border-left-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Responsive adjustments */
 @media (max-width: 600px) {
   .message-bubble {
     max-width: 90vw;
@@ -170,5 +324,18 @@
   
   .source-content {
     font-size: 12px;
+  }
+
+  .markdown-table {
+    font-size: 0.8em;
+  }
+  
+  .markdown-th, .markdown-td {
+    padding: 0.3em;
+  }
+  
+  .markdown-code-block {
+    font-size: 0.8em;
+    padding: 0.8em;
   }
 } 

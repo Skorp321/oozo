@@ -5,10 +5,12 @@ import "./ChatInterface.css";
 
 function ChatInterface({ messages, onSendMessage, isLoading, systemStatus }) {
   const [inputAtBottom, setInputAtBottom] = useState(false);
+  const [showWelcome, setShowWelcome] = useState(true);
   const messagesRef = useRef(null);
 
   const handleSend = (text) => {
     if (!inputAtBottom) setInputAtBottom(true);
+    if (showWelcome) setShowWelcome(false);
     onSendMessage(text);
   };
 
@@ -37,6 +39,16 @@ function ChatInterface({ messages, onSendMessage, isLoading, systemStatus }) {
   return (
     <div className="chat-container">
       <div className="chat-messages" ref={messagesRef}>
+        {showWelcome && messages.length === 0 && (
+          <div className="welcome-message">
+            <div className="welcome-content">
+              <h2>Ассистент клиентского менеджера по вопросам залогов</h2>
+              <p>Ассистент отвечает на вопросы связанные с документацией по залогам.</p>
+              <p>По вопросам работы ассистента обращаться на почту <a href="mailto:Potapov.Sal@sberleasing.com">Potapov.Sal@sberleasing.com</a></p>
+            </div>
+          </div>
+        )}
+        
         <MessageList messages={messages} />
         
         {/* Loading Indicator */}
