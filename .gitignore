@@ -4,3 +4,9 @@ backend/models/multilingual-e5-large/
 docs/
 .env
 frontend/node_modules/
+
+# Исключить документацию и Docker файлы только из streamlit_frontend
+streamlit_frontend/*.md
+streamlit_frontend/Dockerfile*
+streamlit_frontend/docker-compose*.yml
+streamlit_frontend/docker-compose*.yaml
