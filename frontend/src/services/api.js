@@ -23,10 +23,19 @@ const makeRequest = async (url, options = {}) => {
     ...options
   };
 
+  // Добавляем таймаут 10 минут (600 секунд)
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 минут
+
   try {
     console.log(`Making request to: ${fullUrl}`, defaultOptions);
     
-    const response = await fetch(fullUrl, defaultOptions);
+    const response = await fetch(fullUrl, {
+      ...defaultOptions,
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
     
     if (!response.ok) {
       const errorText = await response.text();
@@ -36,7 +45,13 @@ const makeRequest = async (url, options = {}) => {
     const data = await response.json();
     return data;
   } catch (error) {
+    clearTimeout(timeoutId);
     console.error(`Request failed for ${fullUrl}:`, error);
+    
+    if (error.name === 'AbortError') {
+      throw new Error('Request timeout: Превышено время ожидания ответа (10 минут)');
+    }
+    
     throw new Error(`Request failed: ${error.message}`);
   }
 };

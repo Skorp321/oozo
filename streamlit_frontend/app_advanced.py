@@ -234,7 +234,7 @@ st.markdown("""
 def check_backend_health():
     """Проверка состояния бэкенда"""
     try:
-        response = requests.get(HEALTH_ENDPOINT, timeout=5)
+        response = requests.get(HEALTH_ENDPOINT, timeout=30)  # Увеличиваем до 30 секунд
         return response.status_code == 200, response.json() if response.status_code == 200 else None
     except:
         return False, None
@@ -242,7 +242,7 @@ def check_backend_health():
 def get_system_stats():
     """Получение статистики системы"""
     try:
-        response = requests.get(STATS_ENDPOINT, timeout=10)
+        response = requests.get(STATS_ENDPOINT, timeout=60)  # Увеличиваем до 60 секунд
         response.raise_for_status()
         return response.json()
     except:
@@ -251,7 +251,7 @@ def get_system_stats():
 def get_system_info():
     """Получение информации о системе"""
     try:
-        response = requests.get(INFO_ENDPOINT, timeout=10)
+        response = requests.get(INFO_ENDPOINT, timeout=60)  # Увеличиваем до 60 секунд
         response.raise_for_status()
         return response.json()
     except:
@@ -263,7 +263,7 @@ def get_similar_documents(query, k=4):
         response = requests.post(
             SIMILARITY_ENDPOINT,
             json={"query": query, "top_k": k},
-            timeout=15
+            timeout=600  # 10 минут
         )
         response.raise_for_status()
         return response.json()
@@ -279,7 +279,7 @@ def send_message_to_api(question, return_sources=True):
                 "question": question,
                 "return_sources": return_sources
             },
-            timeout=30
+            timeout=600  # 10 минут
         )
         response.raise_for_status()
         return response.json()

@@ -209,7 +209,7 @@ st.markdown("""
 def check_backend_health():
     """Проверка состояния бэкенда"""
     try:
-        response = requests.get(HEALTH_ENDPOINT, timeout=5)
+        response = requests.get(HEALTH_ENDPOINT, timeout=30)  # Увеличиваем до 30 секунд
         return response.status_code == 200
     except:
         return False
