@@ -1,5 +1,7 @@
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+from enum import Enum
+from datetime import datetime
 
 
 class QueryRequest(BaseModel):
@@ -55,3 +57,27 @@ class IngestResponse(BaseModel):
     documents_processed: int
     chunks_created: int
     index_size_mb: float 
+
+
+# -------------------- Async task support --------------------
+
+class TaskStatus(str, Enum):
+    pending = "pending"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+
+
+class TaskCreateResponse(BaseModel):
+    task_id: str
+    status: TaskStatus
+    created_at: datetime
+
+
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    status: TaskStatus
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    result: Optional[QueryResponse] = None
+    error: Optional[str] = None

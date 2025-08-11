@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "Современный интерфейс чата с ботом на React",
-  "proxy": "http://10.77.160.35:8000",
+  "proxy": "http://rag-app:8000",
 
   "scripts": {
     "start": "react-scripts start",

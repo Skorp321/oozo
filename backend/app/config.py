@@ -6,7 +6,7 @@ import os
 
 class Settings(BaseSettings):
     # OpenAI Configuration
-    openai_api_key: str
+    openai_api_key: str = Field(default="dummy_key", env="OPENAI_API_KEY")
     openai_model_name: str = Field(default="gpt-3.5-turbo", env="OPENAI_MODEL_NAME")
     max_tokens: int = Field(default=4000, env="MAX_TOKENS")
     temperature: float = Field(default=0.7, env="TEMPERATURE")

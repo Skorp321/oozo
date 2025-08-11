@@ -1,4 +1,5 @@
 import streamlit as st
+
 import requests
 import json
 import time
@@ -17,6 +18,7 @@ st.set_page_config(
 
 # Конфигурация API
 API_BASE_URL = st.secrets.get("API_BASE_URL", "http://localhost:8000")
+STREAM_QUERY_ENDPOINT = f"{API_BASE_URL}/api/query/stream"
 QUERY_ENDPOINT = f"{API_BASE_URL}/api/query"
 HEALTH_ENDPOINT = f"{API_BASE_URL}/health"
 STATS_ENDPOINT = f"{API_BASE_URL}/api/stats"
@@ -143,6 +145,7 @@ st.markdown("""
     
     .stTextInput > div > div > input {
         border-radius: 20px;
+        height: 44px;
     }
     
     .stButton > button {
@@ -150,10 +153,23 @@ st.markdown("""
         background-color: #007bff;
         color: white;
         border: none;
+        height: 44px;
     }
     
     .stButton > button:hover {
-        background-color: #0056b3;
+        background-color: #007bff; /* оставляем синий при hover */
+    }
+
+    /* Принудительно делаем primary-кнопку синей (API Streamlit 1.4x) */
+    button[data-testid="baseButton-primary"] {
+        background-color: #007bff !important;
+        color: #ffffff !important;
+        border: none !important;
+        border-radius: 20px !important;
+        height: 44px !important;
+    }
+    button[data-testid="baseButton-primary"]:hover {
+        background-color: #007bff !important; /* оставляем синий при hover */
     }
     
     .markdown-content {
@@ -215,18 +231,21 @@ def check_backend_health():
         return False
 
 def send_message_to_api(question, return_sources=True):
-    """Отправка сообщения в API"""
+    """Потоковая отправка в API (SSE). Возвращает объект Response для чтения потока."""
     try:
         response = requests.post(
-            QUERY_ENDPOINT,
+            STREAM_QUERY_ENDPOINT,
+            stream=True,
             json={
                 "question": question,
-                "return_sources": return_sources
+                # Источники не приходят через поток
+                "return_sources": False
             },
+            headers={"Accept": "text/event-stream"},
             timeout=600
         )
         response.raise_for_status()
-        return response.json()
+        return response
     except requests.exceptions.RequestException as e:
         raise Exception(f"Ошибка API: {str(e)}")
 
@@ -270,7 +289,7 @@ def display_message(sender, text, timestamp, sources=None, is_error=False, is_th
                 st.markdown(f"""
                 <div class="source-item">
                     <div class="source-header">
-                        #{i+1} - {source.get('metadata', {}).get('source', 'Неизвестный источник')}
+                        #{i+1} - {source.get('metadata', {}).get('source', source.get('title', 'Неизвестный источник'))}
                     </div>
                     <div class="source-content">
                         {render_markdown(source.get('content', ''))}
@@ -293,6 +312,14 @@ def main():
     
     if "show_welcome" not in st.session_state:
         st.session_state.show_welcome = True
+    
+    # Инициализация служебных флагов и значения ввода ДО создания виджетов
+    if "is_loading" not in st.session_state:
+        st.session_state.is_loading = False
+    if "user_input" not in st.session_state:
+        st.session_state.user_input = ""
+    if "clear_input" not in st.session_state:
+        st.session_state.clear_input = False
     
     # Приветственное сообщение
     if st.session_state.show_welcome and len(st.session_state.messages) == 0:
@@ -328,11 +355,15 @@ def main():
         </div>
         """, unsafe_allow_html=True)
     
-    # Поле ввода
-    with st.container():
+    # Поле ввода + отправка (кнопка всегда активна; Enter отправляет форму)
+    with st.form("chat_form", clear_on_submit=False):
         col1, col2 = st.columns([4, 1])
-        
+
         with col1:
+            # Если необходимо очистить поле ввода, делаем это ДО создания виджета
+            if st.session_state.get("clear_input"):
+                st.session_state.user_input = ""
+                st.session_state.clear_input = False
             user_input = st.text_input(
                 "Введите ваш вопрос:",
                 key="user_input",
@@ -340,24 +371,23 @@ def main():
                 placeholder="Задайте вопрос о залогах...",
                 label_visibility="collapsed"
             )
-        
+
         with col2:
-            st.write("")  # Пустая строка для выравнивания
-            send_button = st.button(
+            send_button = st.form_submit_button(
                 "Отправить",
-                disabled=st.session_state.get("is_loading", False) or not user_input,
+                disabled=st.session_state.get("is_loading", False),
                 use_container_width=True
             )
     
     # Обработка отправки сообщения
-    if (send_button or (user_input and st.session_state.get("_enter_pressed", False))) and user_input:
-        # Сброс флага
-        st.session_state._enter_pressed = False
-        
+    trimmed_input = (st.session_state.user_input or "").strip()
+    if send_button and not trimmed_input:
+        st.warning("Введите запрос!")
+    if send_button and trimmed_input:
         # Добавление сообщения пользователя
         user_message = {
             "sender": "user",
-            "text": user_input.strip(),
+            "text": trimmed_input,
             "timestamp": datetime.now().strftime("%H:%M:%S")
         }
         st.session_state.messages.append(user_message)
@@ -368,10 +398,13 @@ def main():
         # Установка состояния загрузки
         st.session_state.is_loading = True
         
+        # Очистка поля ввода выполняется через флаг, чтобы сделать это ДО создания виджета
+        st.session_state.clear_input = True
+        
         # Добавление сообщения "думает"
         thinking_message = {
             "sender": "bot",
-            "text": "Обрабатываю ваш запрос...",
+            "text": "Система 'АИСТ' летит к вам с ответом...",
             "timestamp": datetime.now().strftime("%H:%M:%S"),
             "is_thinking": True
         }
@@ -390,17 +423,55 @@ def main():
             user_message = next((msg for msg in reversed(st.session_state.messages) if msg["sender"] == "user"), None)
             
             if user_message:
-                # Отправка запроса к API
-                response = send_message_to_api(user_message["text"])
-                
-                # Добавление ответа бота
-                bot_message = {
-                    "sender": "bot",
-                    "text": response.get("answer", "Извините, не удалось получить ответ."),
-                    "timestamp": datetime.now().strftime("%H:%M:%S"),
-                    "sources": response.get("sources", [])
-                }
-                st.session_state.messages.append(bot_message)
+                resp = send_message_to_api(user_message["text"])  # потоковый Response
+                if resp.status_code == 200:
+                    word_container = st.empty()
+                    generated_text = ""
+                    sources_collected = None
+                    
+                    for raw_line in resp.iter_lines(decode_unicode=True):
+                        if not raw_line:
+                            continue
+                        line = raw_line.strip()
+                        if line.startswith("data:"):
+                            payload = line[len("data:"):].strip()
+                        else:
+                            payload = line
+                        if payload == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(payload)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(data, dict) and data.get("error"):
+                            raise Exception(data["error"])
+                        # Получение источников (чанков) из SSE
+                        if isinstance(data, dict) and data.get("sources") is not None:
+                            try:
+                                if isinstance(data["sources"], list):
+                                    sources_collected = data["sources"]
+                                    st.info(f"Получены источники: {len(sources_collected)} чанков")
+                            except Exception as e:
+                                st.warning(f"Ошибка обработки источников: {e}")
+                                sources_collected = None
+                            continue
+                        token = data.get("token") if isinstance(data, dict) else None
+                        if token:
+                            generated_text += token
+                            word_container.markdown(f"**Генерация текста:** {generated_text} ▋")
+                    
+                    if generated_text:
+                        bot_message = {
+                            "sender": "bot",
+                            "text": generated_text,
+                            "timestamp": datetime.now().strftime("%H:%M:%S"),
+                        }
+                        if sources_collected:
+                            bot_message["sources"] = sources_collected
+                            st.success(f"Добавлены источники: {len(sources_collected)} чанков")
+                        else:
+                            st.warning("Источники не получены")
+                        st.session_state.messages.append(bot_message)
                 
         except Exception as e:
             # Удаление сообщения "думает"
@@ -420,9 +491,7 @@ def main():
             st.session_state.is_loading = False
             st.rerun()
     
-    # Обработка нажатия Enter
-    if user_input and not send_button:
-        st.session_state._enter_pressed = True
+    # Enter также отправляет форму благодаря st.form
 
 if __name__ == "__main__":
     main() 

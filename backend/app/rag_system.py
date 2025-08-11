@@ -7,10 +7,12 @@ import numpy as np
 from datetime import datetime
 
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.retrievers import BM25Retriever
 from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA
+from langchain.retrievers import EnsembleRetriever
 from langchain_openai import ChatOpenAI
 from langchain.schema import Document
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableParallel
 
 from .config import settings
@@ -18,12 +20,18 @@ from .document_processor import load_docx_files, split_documents, get_document_s
 
 logger = logging.getLogger(__name__)
 
+def format_documents(documents: list[Document]):
+    return "\n\n".join(doc.page_content for doc in documents)
 
+def format_answer(response: str):
+    return response.content.split('</think>')[-1].strip()
+        
+        
 class RAGSystem:
     def __init__(self):
         self.embeddings = None
         self.vector_store = None
-        self.qa_chain = None
+        self.llm = None
         self.documents = []
         self.stats = {}
         self._initialized = False
@@ -42,7 +50,7 @@ class RAGSystem:
             self._load_or_create_vector_store()
             
             # Настройка QA цепочки
-            self._setup_qa_chain()
+            self._init_llm()
             
             self._initialized = True
             logger.info("RAG система успешно инициализирована")
@@ -113,7 +121,8 @@ class RAGSystem:
                 
                 self.vector_store = FAISS.load_local(
                     str(index_path),
-                    self.embeddings
+                    self.embeddings,
+                    allow_dangerous_deserialization=True
                 )
                 
                 # Загрузка метаданных
@@ -130,6 +139,25 @@ class RAGSystem:
                     self.stats = {}
                 
                 logger.info(f"FAISS индекс загружен успешно: {self.vector_store.index.ntotal} векторов")
+                
+                # Загрузка документов для создания BM25 ретривера
+                self.documents = load_docx_files(settings.docs_path)
+                if self.documents:
+                    chunks = split_documents(self.documents)
+                    if chunks:
+                        # Создание гибридного ретривера
+                        bm25 = BM25Retriever.from_documents(chunks)
+                        self.retriever = EnsembleRetriever(
+                            retrievers=[bm25, self.vector_store.as_retriever(search_kwargs={"k": 5})],
+                            weights=[0.5, 0.5]
+                        )
+                        logger.info("Гибридный ретривер создан")
+                    else:
+                        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
+                        logger.info("Создан простой векторный ретривер")
+                else:
+                    self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
+                    logger.info("Документы не найдены, создан простой векторный ретривер")
                 
             except Exception as e:
                 logger.error(f"Ошибка при загрузке FAISS индекса: {e}")
@@ -152,6 +180,8 @@ class RAGSystem:
                 # Создаем пустой индекс
                 dummy_docs = [Document(page_content="", metadata={})]
                 self.vector_store = FAISS.from_documents(dummy_docs, self.embeddings)
+                # Не создаем retriever для пустых документов
+                self.retriever = None
                 self.stats = {
                     "total_documents": 0,
                     "total_chunks": 0,
@@ -165,6 +195,13 @@ class RAGSystem:
             
             # Создание векторного хранилища
             self.vector_store = FAISS.from_documents(chunks, self.embeddings)
+            
+            # Создание гибридного ретривера
+            bm25 = BM25Retriever.from_documents(chunks)
+            self.retriever = EnsembleRetriever(
+                retrievers=[bm25, self.vector_store.as_retriever(search_kwargs={"k": 5})],
+                weights=[0.5, 0.5]
+            )
             
             # Сохранение индекса
             self._save_vector_store()
@@ -241,83 +278,65 @@ class RAGSystem:
             "last_updated": datetime.now().isoformat()
         }
     
-    def _setup_qa_chain(self):
+    def _init_llm(self):
         """
         Настройка QA цепочки
         """
-        def format_documents(documents: list[Document]):
-            return "\n\n".join(doc.page_content for doc in documents)
-        
-        def format_answer(response: str):
-            return response.content.split('</think>')[-1].strip()
-        
-        try:
-            if not self.vector_store:
-                logger.warning("Векторное хранилище не инициализировано")
-                return
-            
-            # Создание языковой модели
-            repo_id = "model-run-vekow-trunk"
+        # Создание языковой модели
+        repo_id = "model-run-vekow-trunk"
 
-            llm = ChatOpenAI(
-                        openai_api_key="dummy_key",
-                        openai_api_base="https://565df812-6798-4e3d-9a62-18d67e029d53.modelrun.inference.cloud.ru/v1",
-                        model=repo_id,
-                        temperature=0.1,
-                        timeout=600  # 10 minutes
-                    )
-
-
-            from langchain_core.prompts import ChatPromptTemplate
-            
-            # Создание промпта
-            template = """Ты - помощник по юридическим вопросам. Используй следующие части контекста из юридических документов, чтобы дать точный и полезный ответ на вопрос пользователя.
-
-            Важные правила:
-            1. Отвечай только на основе предоставленного контекста
-            2. Если в контексте нет информации для ответа, честно скажи об этом
-            3. Не придумывай информацию, которой нет в контексте
-            4. Давай четкие и структурированные ответы
-            5. При необходимости цитируй соответствующие части контекста
-            
-            Контекст: {context}
-            
-            Вопрос: {question}
-            
-            Ответ:"""
-            
-            prompt = ChatPromptTemplate.from_template(template)
-            
-            # Создание QA цепочки
-            self.qa_chain = RunnableParallel(
-                                        context=self.vector_store.as_retriever(search_kwargs={"k": 5}) 
-                                        | format_documents, question=lambda data: data
-                                        ) | prompt | llm | format_answer
-            logger.info("QA цепочка настроена")
-            
-        except Exception as e:
-            logger.error(f"Ошибка при настройке QA цепочки: {e}")
-            raise
+        self.llm = ChatOpenAI(
+                    openai_api_key="dummy_key",
+                    openai_api_base="https://565df812-6798-4e3d-9a62-18d67e029d53.modelrun.inference.cloud.ru/v1",
+                    model=repo_id,
+                    temperature=0.1,
+                    streaming=True,
+                    timeout=600  # 10 minutes
+                )      
     
     def query(self, question: str, return_sources: bool = True) -> Dict[str, Any]:
         """
         Выполнение запроса к RAG системе
         """
+        
+        # Создание промпта
+        template = """Ты - помощник по юридическим вопросам. Используй следующие части контекста из юридических документов, чтобы дать точный и полезный ответ на вопрос пользователя.
+
+        Важные правила:
+        1. Отвечай только на основе предоставленного контекста
+        2. Если в контексте нет информации для ответа, честно скажи об этом
+        3. Не придумывай информацию, которой нет в контексте
+        4. Давай четкие и структурированные ответы
+        5. При необходимости цитируй соответствующие части контекста
+        6. Отвечай на русском языке
+        
+        Контекст: {context}
+        
+        Вопрос: {question}
+        
+        Ответ:"""
+            
+        prompt = ChatPromptTemplate.from_template(template)
+        
         if not self._initialized:
             raise RuntimeError("RAG система не инициализирована")
         
         try:
             logger.info(f"Обработка запроса: {question}")
             
-            if not self.qa_chain:
-                return {
-                    "answer": "Система не готова к обработке запросов. Проверьте настройки OpenAI API.",
-                    "sources": []
-                }
+            # Проверяем наличие retriever
+            if self.retriever is None:
+                logger.warning("Retriever не инициализирован, используем прямой поиск по векторному хранилищу")
+                chunks = self.vector_store.similarity_search(question, k=5) if self.vector_store else []
+            else:
+                chunks = self.retriever.invoke(question)
+            context = format_documents(chunks)
             
-            # Выполнение запроса
-            result = self.qa_chain.invoke(question)
+            chain = prompt | self.llm
+            result = chain.invoke({"context": context, "question": question})
             
+            result = format_answer(result)
+
             # Обработка результата от RetrievalQA
             answer = result if result else "Не удалось получить ответ"
 

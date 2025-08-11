@@ -1,5 +1,6 @@
 // Конфигурация API эндпоинтов
 export const QUERY_ENDPOINT = '/api/query';
+export const STREAM_QUERY_ENDPOINT = '/api/query/stream';
 export const HEALTH_ENDPOINT = '/health';
 export const SIMILARITY_ENDPOINT = '/api/similarity';
 export const STATS_ENDPOINT = '/api/stats';
@@ -14,6 +15,10 @@ export const getBaseUrl = () => {
     return '';
   }
   
-  // В production используем переменную окружения или IP адрес бэкенда
-  return process.env.REACT_APP_API_BASE_URL || 'http://10.77.160.35:8000';
+  // В production используем переменную окружения (поддерживаем оба имени), иначе сервисное имя Docker
+  return (
+    process.env.REACT_APP_API_BASE_URL ||
+    process.env.REACT_APP_API_URL ||
+    'http://rag-app:8000'
+  );
 }; 

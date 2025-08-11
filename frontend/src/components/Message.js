@@ -11,7 +11,7 @@ import "prismjs/components/prism-css";
 import "prismjs/components/prism-sql";
 import "./Message.css";
 
-function Message({ sender, text, timestamp, sources, isError, isThinking }) {
+function Message({ sender, text, timestamp, sources, isError, isThinking, isStreaming, showTyping }) {
   const [showSources, setShowSources] = useState(false);
   const isUser = sender === "user";
   const hasSources = sources && sources.length > 0;
@@ -30,12 +30,12 @@ function Message({ sender, text, timestamp, sources, isError, isThinking }) {
   }, [showSources, sources]);
 
   return (
-    <div className={`message-row ${isUser ? "user" : "bot"} ${isError ? "error" : ""} ${isThinking ? "thinking" : ""}`}>
+    <div className={`message-row ${isUser ? "user" : "bot"} ${isError ? "error" : ""} ${isThinking ? "thinking" : ""} ${isStreaming ? "streaming" : ""}`}>
       <div className="avatar">
-        {isUser ? "🧑" : isThinking ? "⏳" : isError ? "❌" : "🤖"}
+        {isUser ? "🧑" : isThinking ? "⏳" : isError ? "❌" : isStreaming ? "✍️" : "🤖"}
       </div>
       <div className="message-bubble">
-        <div className={`message-text ${isError ? "error-text" : ""}`}>
+        <div className={`message-text ${isError ? "error-text" : ""} ${isStreaming ? "streaming-text" : ""}`}>
           <ReactMarkdown 
             remarkPlugins={[remarkGfm]}
             components={{
@@ -93,6 +93,10 @@ function Message({ sender, text, timestamp, sources, isError, isThinking }) {
           >
             {text}
           </ReactMarkdown>
+          {/* Индикатор печатания для стриминга */}
+          {isStreaming && (
+            <span className="streaming-cursor">|</span>
+          )}
         </div>
         
         {/* Sources Section */}

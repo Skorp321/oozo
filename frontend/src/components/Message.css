@@ -18,6 +18,41 @@
   border-left: 4px solid #4299e1;
 }
 
+.message-row.streaming .message-bubble {
+  background: #f0fff4;
+  border-left: 4px solid #38a169;
+  animation: streamingPulse 2s ease-in-out infinite;
+}
+
+.streaming-text {
+  position: relative;
+}
+
+.streaming-cursor {
+  color: #38a169;
+  font-weight: bold;
+  animation: blink 1s infinite;
+  margin-left: 2px;
+}
+
+@keyframes blink {
+  0%, 50% {
+    opacity: 1;
+  }
+  51%, 100% {
+    opacity: 0;
+  }
+}
+
+@keyframes streamingPulse {
+  0%, 100% {
+    border-left-color: #38a169;
+  }
+  50% {
+    border-left-color: #68d391;
+  }
+}
+
 .avatar {
   font-size: 1.7rem;
   margin-bottom: 4px;
