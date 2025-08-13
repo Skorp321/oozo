@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     # File Paths
     docs_path: str = Field(default="../docs", env="DOCS_PATH")
     index_path: str = Field(default="./data/faiss_index", env="INDEX_PATH")
+    logs_path: str = Field(default="./data/logs/qa_logs.jsonl", env="LOGS_PATH")
     
     # Document Processing Configuration
     chunk_size: int = Field(default=1000, env="CHUNK_SIZE")

@@ -56,7 +56,22 @@ class IngestResponse(BaseModel):
     message: str
     documents_processed: int
     chunks_created: int
-    index_size_mb: float 
+    index_size_mb: float
+
+
+class LogEntry(BaseModel):
+    timestamp: str
+    request: Dict[str, Any]
+    response: Dict[str, Any]
+    processing_time_seconds: Optional[float] = None
+    error: Optional[str] = None
+    status: str
+    type: Optional[str] = None
+
+
+class LogsResponse(BaseModel):
+    logs: List[LogEntry]
+    total_count: int 
 
 
 # -------------------- Async task support --------------------

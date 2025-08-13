@@ -6,17 +6,17 @@ from langchain.schema import HumanMessage
 from typing import List
 import logging
 import asyncio
+import time
 
 from ..schemas import (
     QueryRequest,
     QueryResponse,
     Source,
-    TaskCreateResponse,
-    TaskStatusResponse,
-    TaskStatus,
+    LogsResponse,
+    LogEntry,
 )
 from ..rag_system import rag_system
-from ..task_manager import create_async_task, get_task_status
+from ..logger import qa_logger
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -27,14 +27,18 @@ async def query(request: QueryRequest):
     """
     Обработка запроса пользователя с использованием RAG системы
     """
+    start_time = time.time()
+    error_message = None
+    
     try:
         logger.info(f"Получен запрос: {request.question}")
         
         # Проверка инициализации системы
         if not rag_system._initialized:
+            error_message = "RAG система не инициализирована"
             raise HTTPException(
                 status_code=503,
-                detail="RAG система не инициализирована"
+                detail=error_message
             )
         
         # Выполнение запроса
@@ -69,11 +73,20 @@ async def query(request: QueryRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Ошибка при обработке запроса: {e}")
+        error_message = f"Ошибка при обработке запроса: {e}"
+        logger.error(error_message)
         raise HTTPException(
             status_code=500,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
-        ) 
+        )
+    finally:
+        # Логируем вопрос и ответ
+        processing_time = time.time() - start_time
+        if 'response' in locals():
+            qa_logger.log_qa(request, response, processing_time, error_message)
+        else:
+            # Если ответ не был создан, логируем только вопрос с ошибкой
+            qa_logger.log_qa(request, QueryResponse(question=request.question, answer=""), processing_time, error_message) 
 
 
 @router.post("/api/query/stream")
@@ -82,6 +95,11 @@ async def query_stream(request: QueryRequest):
     Потоковая генерация ответа. Возвращает SSE-поток (text/event-stream)
     с чанками токенов по мере генерации.
     """
+    start_time = time.time()
+    error_message = None
+    answer_parts = []
+    sources_count = 0
+    
     try:
         logger.info(
             "[STREAM] POST /api/query/stream: received. question_len=%s, return_sources=%s",
@@ -186,7 +204,8 @@ async def query_stream(request: QueryRequest):
                     except Exception as e:
                         logger.debug("[STREAM] пропущен source из-за ошибки сериализации: %s", e)
                         continue
-                logger.info("[STREAM] подготовлено %s источников для отправки", len(sources_payload))
+                sources_count = len(sources_payload)
+                logger.info("[STREAM] подготовлено %s источников для отправки", sources_count)
             except Exception as e:
                 logger.warning("[STREAM] не удалось подготовить sources для SSE: %s", e)
 
@@ -197,6 +216,7 @@ async def query_stream(request: QueryRequest):
                         text = getattr(chunk, "content", None) or ""
                         if text:
                             token_count += 1
+                            answer_parts.append(text)  # Собираем части ответа для логирования
                             if token_count <= 5 or token_count % 10 == 0:
                                 logger.info(
                                     "[STREAM] chunk #%s len=%s preview='%s'",
@@ -206,8 +226,9 @@ async def query_stream(request: QueryRequest):
                     logger.info("[STREAM] completed. total_chunks=%s", token_count)
                     loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
                 except Exception as e:
-                    logger.error("[STREAM] error while streaming: %s", e)
-                    loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
+                    error_message = str(e)
+                    logger.error("[STREAM] error while streaming: %s", error_message)
+                    loop.call_soon_threadsafe(queue.put_nowait, ("error", error_message))
 
             # Сначала отправляем sources синхронно, чтобы они были первыми
             if len(sources_payload) > 0:
@@ -240,7 +261,19 @@ async def query_stream(request: QueryRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
+        error_message = f"Внутренняя ошибка сервера: {str(e)}"
+        raise HTTPException(status_code=500, detail=error_message)
+    finally:
+        # Логируем потоковый вопрос и ответ
+        processing_time = time.time() - start_time
+        full_answer = "".join(answer_parts) if answer_parts else ""
+        qa_logger.log_stream_qa(
+            question=request.question,
+            answer=full_answer,
+            sources_count=sources_count,
+            processing_time=processing_time,
+            error=error_message
+        )
 
 
 @router.get("/api/query/stream")
@@ -256,3 +289,51 @@ async def query_stream_get(question: str = Query(..., description="Пользо�
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
+
+
+@router.get("/api/logs", response_model=LogsResponse)
+async def get_logs(limit: int = Query(100, description="Максимальное количество записей")):
+    """
+    Получение логов вопросов и ответов
+    """
+    try:
+        logs = qa_logger.get_logs(limit=limit)
+        
+        # Преобразуем в Pydantic модели
+        log_entries = []
+        for log in logs:
+            try:
+                log_entry = LogEntry(**log)
+                log_entries.append(log_entry)
+            except Exception as e:
+                logger.warning(f"Ошибка при парсинге лога: {e}")
+                continue
+        
+        return LogsResponse(
+            logs=log_entries,
+            total_count=len(log_entries)
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении логов: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка при получении логов: {str(e)}"
+        )
+
+
+@router.delete("/api/logs")
+async def clear_logs():
+    """
+    Очистка всех логов
+    """
+    try:
+        qa_logger.clear_logs()
+        return {"message": "Логи успешно очищены"}
+        
+    except Exception as e:
+        logger.error(f"Ошибка при очистке логов: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка при очистке логов: {str(e)}"
+        )
