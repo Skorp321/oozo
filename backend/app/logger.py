@@ -39,6 +39,10 @@ class QALogger:
             error: Сообщение об ошибке, если есть
         """
         try:
+            # Проверяем, что ответ не пустой (если нет ошибки)
+            if not response.answer and not error:
+                self.logger.warning(f"Пустой ответ для вопроса: '{request.question[:50]}...'")
+            
             log_entry = {
                 "timestamp": datetime.now().isoformat(),
                 "request": {
@@ -58,7 +62,7 @@ class QALogger:
             with open(self.log_file, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
             
-            self.logger.info(f"QA лог записан: вопрос='{request.question[:50]}...'")
+            self.logger.info(f"QA лог записан: вопрос='{request.question[:50]}...', ответ={len(response.answer)} символов")
             
         except Exception as e:
             self.logger.error(f"Ошибка при записи QA лога: {e}")
@@ -78,6 +82,10 @@ class QALogger:
             error: Сообщение об ошибке, если есть
         """
         try:
+            # Проверяем, что ответ не пустой (если нет ошибки)
+            if not answer and not error:
+                self.logger.warning(f"Пустой ответ для вопроса: '{question[:50]}...'")
+            
             log_entry = {
                 "timestamp": datetime.now().isoformat(),
                 "type": "stream",
@@ -98,7 +106,7 @@ class QALogger:
             with open(self.log_file, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
             
-            self.logger.info(f"Stream QA лог записан: вопрос='{question[:50]}...'")
+            self.logger.info(f"Stream QA лог записан: вопрос='{question[:50]}...', ответ={len(answer)} символов")
             
         except Exception as e:
             self.logger.error(f"Ошибка при записи stream QA лога: {e}")

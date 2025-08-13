@@ -287,7 +287,7 @@ class RAGSystem:
 
         self.llm = ChatOpenAI(
                     openai_api_key="dummy_key",
-                    openai_api_base="https://565df812-6798-4e3d-9a62-18d67e029d53.modelrun.inference.cloud.ru/v1",
+                    openai_api_base="https://10f9698e-46b7-4a33-be37-f6495989f01f.modelrun.inference.cloud.ru/v1",
                     model=repo_id,
                     temperature=0.1,
                     streaming=True,

@@ -84,9 +84,11 @@ async def query(request: QueryRequest):
         processing_time = time.time() - start_time
         if 'response' in locals():
             qa_logger.log_qa(request, response, processing_time, error_message)
+            logger.info(f"[QUERY] Логирование завершено. Ответ: {len(response.answer)} символов, ошибка: {error_message}")
         else:
             # Если ответ не был создан, логируем только вопрос с ошибкой
-            qa_logger.log_qa(request, QueryResponse(question=request.question, answer=""), processing_time, error_message) 
+            qa_logger.log_qa(request, QueryResponse(question=request.question, answer=""), processing_time, error_message)
+            logger.warning(f"[QUERY] Логирование с пустым ответом из-за ошибки: {error_message}") 
 
 
 @router.post("/api/query/stream")
@@ -99,6 +101,7 @@ async def query_stream(request: QueryRequest):
     error_message = None
     answer_parts = []
     sources_count = 0
+    response_generated = False
     
     try:
         logger.info(
@@ -133,16 +136,26 @@ async def query_stream(request: QueryRequest):
         context_text = "\n\n".join(context_parts)
 
         template = (
-            "Ты - помощник по юридическим вопросам. Используй следующие части контекста из юридических документов, чтобы дать точный и полезный ответ на вопрос пользователя.\n\n"
-            "Важные правила:\n"
-            "1. Отвечай только на основе предоставленного контекста\n"
-            "2. Если в контексте нет информации для ответа, честно скажи об этом\n"
-            "3. Не придумывай информацию, которой нет в контексте\n"
-            "4. Давай четкие и структурированные ответы\n"
-            "5. При необходимости цитируй соответствующие части контекста\n\n"
-            "Контекст: {context}\n\n"
-            "Вопрос: {question}\n\n"
-            "Ответ:"
+            """
+            Ты - помощник по юридическим вопросам. Используй предоставленные части контекста из юридических документов, чтобы дать точный и полезный ответ на вопрос пользователя.
+
+            Важные правила:
+
+            Отвечай только на основе предоставленного контекста.
+            Если в контексте нет информации для ответа, честно скажи об этом.
+            Не придумывай информацию, которой нет в контексте.
+            Давай четкие и структурированные ответы.
+            Контекст:
+            “”"
+            {context}
+            “”"
+
+            Вопрос:
+            “”"
+            {question}
+            “”"
+
+            Ответ:"""
         )
 
         final_prompt = template.format(context=context_text, question=request.question)
@@ -152,11 +165,11 @@ async def query_stream(request: QueryRequest):
         )
 
         # Настройка LLM c потоковой отдачей (используем те же параметры, что и в системе)
-        repo_id = "model-run-vekow-trunk"
+        repo_id = "library/qwen3:32b"
         logger.info("[STREAM] initializing ChatOpenAI(streaming=True) ...")
         llm = ChatOpenAI(
             openai_api_key="dummy_key",
-            openai_api_base="https://565df812-6798-4e3d-9a62-18d67e029d53.modelrun.inference.cloud.ru/v1",
+            openai_api_base="https://10f9698e-46b7-4a33-be37-f6495989f01f.modelrun.inference.cloud.ru/v1",
             model=repo_id,
             temperature=0.1,
             timeout=600,
@@ -210,6 +223,7 @@ async def query_stream(request: QueryRequest):
                 logger.warning("[STREAM] не удалось подготовить sources для SSE: %s", e)
 
             def produce_tokens():
+                nonlocal response_generated
                 try:
                     token_count = 0
                     for chunk in llm.stream([HumanMessage(content=final_prompt)]):
@@ -217,6 +231,7 @@ async def query_stream(request: QueryRequest):
                         if text:
                             token_count += 1
                             answer_parts.append(text)  # Собираем части ответа для логирования
+                            response_generated = True  # Отмечаем, что ответ начал генерироваться
                             if token_count <= 5 or token_count % 10 == 0:
                                 logger.info(
                                     "[STREAM] chunk #%s len=%s preview='%s'",
@@ -224,11 +239,38 @@ async def query_stream(request: QueryRequest):
                                 )
                             loop.call_soon_threadsafe(queue.put_nowait, ("token", text))
                     logger.info("[STREAM] completed. total_chunks=%s", token_count)
+                    # processing_time = time.time() - start_time
+                    # full_answer = "".join(answer_parts) if answer_parts else ""
+                    
+                    # # Логируем только если был сгенерирован ответ или произошла ошибка
+                    # if response_generated:
+                    #     qa_logger.log_stream_qa(
+                    #         question=request.question,
+                    #         answer=full_answer,
+                    #         sources_count=sources_count,
+                    #         processing_time=processing_time,
+                    #         error=None
+                    #     )
                     loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
                 except Exception as e:
                     error_message = str(e)
                     logger.error("[STREAM] error while streaming: %s", error_message)
                     loop.call_soon_threadsafe(queue.put_nowait, ("error", error_message))
+                finally:
+                    processing_time = time.time() - start_time
+                    full_answer = "".join(answer_parts) if answer_parts else ""
+                    error_message = None
+                    # Логируем только если был сгенерирован ответ или произошла ошибка
+                    if response_generated or error_message:
+                        qa_logger.log_stream_qa(
+                            question=request.question,
+                            answer=full_answer.split('</think>')[-1].strip(),
+                            sources_count=sources_count,
+                            processing_time=processing_time,
+                            error=error_message
+                        )
+                    answer_text = full_answer.split('</think>')[-1].strip()
+                    logger.info(f"[STREAM] Логирование завершено. Ответ: {len(answer_text)} символов, ошибка: {error_message}")
 
             # Сначала отправляем sources синхронно, чтобы они были первыми
             if len(sources_payload) > 0:
@@ -265,15 +307,24 @@ async def query_stream(request: QueryRequest):
         raise HTTPException(status_code=500, detail=error_message)
     finally:
         # Логируем потоковый вопрос и ответ
-        processing_time = time.time() - start_time
-        full_answer = "".join(answer_parts) if answer_parts else ""
-        qa_logger.log_stream_qa(
-            question=request.question,
-            answer=full_answer,
-            sources_count=sources_count,
-            processing_time=processing_time,
-            error=error_message
-        )
+        try:
+            processing_time = time.time() - start_time
+            full_answer = "".join(answer_parts) if answer_parts else ""
+            
+            # Логируем только если был сгенерирован ответ или произошла ошибка
+            if response_generated or error_message:
+                qa_logger.log_stream_qa(
+                    question=request.question,
+                    answer=full_answer,
+                    sources_count=sources_count,
+                    processing_time=processing_time,
+                    error=error_message
+                )
+                logger.info(f"[STREAM] Логирование завершено. Ответ: {len(full_answer)} символов, ошибка: {error_message}")
+            else:
+                logger.warning("[STREAM] Пропуск логирования - ответ не был сгенерирован")
+        except Exception as e:
+            logger.error(f"[STREAM] Ошибка при логировании: {e}")
 
 
 @router.get("/api/query/stream")

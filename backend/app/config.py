@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     port: int = 8000
     debug: bool = False
     
+    # Frontend Configuration (optional)
+    react_app_api_url: Optional[str] = Field(default=None, env="REACT_APP_API_URL")
+    react_app_environment: Optional[str] = Field(default=None, env="REACT_APP_ENVIRONMENT")
+    
     class Config:
         env_file = ".env"
         case_sensitive = False

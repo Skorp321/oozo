@@ -25,6 +25,7 @@ services:
       - MAX_TOKENS=${MAX_TOKENS:-4000}
       - TEMPERATURE=${TEMPERATURE:-0.7}
     volumes:
+      - ./backend/data/logs:/app/data/logs
       - ./docs:/app/docs:ro
       - ./backend/models/multilingual-e5-large:/app/models/multilingual-e5-large
       - faiss-index-data:/app/data/faiss_index
@@ -59,19 +60,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Gradio Frontend
-  gradio-frontend:
-    build:
-      context: ./gradio_frontend
-      dockerfile: Dockerfile
-    container_name: rag-gradio
-    ports:
-      - "7861:7860"
-    environment:
-      - API_BASE_URL=http://rag-backend:8000
-    networks:
-      - rag-network
-    restart: unless-stopped
+
 
 networks:
   rag-network:

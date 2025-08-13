@@ -458,12 +458,12 @@ def main():
                         token = data.get("token") if isinstance(data, dict) else None
                         if token:
                             generated_text += token
-                            word_container.markdown(f"**Генерация текста:** {generated_text} ▋")
+                            word_container.markdown(f"**Генерация текста:** {generated_text.split('</think>')[-1]} ▋")
                     
                     if generated_text:
                         bot_message = {
                             "sender": "bot",
-                            "text": generated_text,
+                            "text": generated_text.split('</think>')[-1],
                             "timestamp": datetime.now().strftime("%H:%M:%S"),
                         }
                         if sources_collected:
