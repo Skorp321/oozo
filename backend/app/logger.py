@@ -69,6 +69,7 @@ class QALogger:
     
     def log_stream_qa(self, question: str, answer: str, 
                      sources_count: int = 0,
+                     sources_payload: Optional[list] = None,
                      processing_time: Optional[float] = None,
                      error: Optional[str] = None) -> None:
         """
@@ -78,6 +79,7 @@ class QALogger:
             question: Вопрос пользователя
             answer: Ответ системы
             sources_count: Количество источников
+            sources_payload: Данные источников
             processing_time: Время обработки в секундах
             error: Сообщение об ошибке, если есть
         """
@@ -95,7 +97,8 @@ class QALogger:
                 },
                 "response": {
                     "answer": answer,
-                    "sources_count": sources_count
+                    "sources_count": sources_count,
+                    "sources_payload": sources_payload
                 },
                 "processing_time_seconds": processing_time,
                 "error": error,

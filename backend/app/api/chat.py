@@ -239,18 +239,7 @@ async def query_stream(request: QueryRequest):
                                 )
                             loop.call_soon_threadsafe(queue.put_nowait, ("token", text))
                     logger.info("[STREAM] completed. total_chunks=%s", token_count)
-                    # processing_time = time.time() - start_time
-                    # full_answer = "".join(answer_parts) if answer_parts else ""
-                    
-                    # # Логируем только если был сгенерирован ответ или произошла ошибка
-                    # if response_generated:
-                    #     qa_logger.log_stream_qa(
-                    #         question=request.question,
-                    #         answer=full_answer,
-                    #         sources_count=sources_count,
-                    #         processing_time=processing_time,
-                    #         error=None
-                    #     )
+
                     loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
                 except Exception as e:
                     error_message = str(e)
@@ -266,6 +255,7 @@ async def query_stream(request: QueryRequest):
                             question=request.question,
                             answer=full_answer.split('</think>')[-1].strip(),
                             sources_count=sources_count,
+                            sources_payload=sources_payload,
                             processing_time=processing_time,
                             error=error_message
                         )
@@ -317,6 +307,7 @@ async def query_stream(request: QueryRequest):
                     question=request.question,
                     answer=full_answer,
                     sources_count=sources_count,
+                    sources_payload=None,
                     processing_time=processing_time,
                     error=error_message
                 )
