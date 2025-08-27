@@ -44,68 +44,76 @@ def format_timestamp(timestamp_str):
     except:
         return timestamp_str
 
-def display_record(record, index):
+def display_record(record, index, default_expanded=False):
     """Отображает одну запись в удобном формате"""
-    st.markdown(f"---")
-    st.markdown(f"### 📋 Запись #{index + 1} (строка {record.get('_line_number', 'N/A')})")
+    # Создаем заголовок с основной информацией для expander'а
+    timestamp = format_timestamp(record.get('timestamp', ''))
+    status_color = "🟢" if record.get('status') == 'success' else "🔴"
+    question = record.get('request', {}).get('question', '')[:50]
+    if len(question) > 50:
+        question += "..."
     
-    # Основная информация в колонках
-    col1, col2 = st.columns([1, 2])
+    expander_title = f"📋 Запись #{index + 1} | {timestamp} | {status_color} {record.get('status', '')} | {question}"
     
-    with col1:
-        st.markdown("#### 📊 Метаданные")
+    with st.expander(expander_title, expanded=default_expanded):
+        # Основная информация в колонках
+        col1, col2 = st.columns([1, 2])
         
-        # Временная метка
-        if 'timestamp' in record:
-            st.write(f"**Время:** {format_timestamp(record['timestamp'])}")
+        with col1:
+            st.markdown("#### 📊 Метаданные")
+            
+            # Временная метка
+            if 'timestamp' in record:
+                st.write(f"**Время:** {format_timestamp(record['timestamp'])}")
+            
+            # Тип записи
+            if 'type' in record:
+                st.write(f"**Тип:** {record['type']}")
+            
+            # Статус
+            if 'status' in record:
+                status_color = "🟢" if record['status'] == 'success' else "🔴"
+                st.write(f"**Статус:** {status_color} {record['status']}")
+            
+            # Время обработки
+            if 'processing_time_seconds' in record:
+                st.write(f"**Время обработки:** {record['processing_time_seconds']:.2f} сек")
+            
+            # Количество источников
+            if 'response' in record and 'sources_count' in record['response']:
+                st.write(f"**Источников:** {record['response']['sources_count']}")
+            
+            # Ошибка
+            if 'error' in record and record['error']:
+                st.error(f"**Ошибка:** {record['error']}")
         
-        # Тип записи
-        if 'type' in record:
-            st.write(f"**Тип:** {record['type']}")
+        with col2:
+            st.markdown("#### 💬 Содержимое")
+            
+            # Запрос
+            if 'request' in record:
+                st.markdown("**Запрос:**")
+                if 'question' in record['request']:
+                    st.info(record['request']['question'])
+                else:
+                    st.json(record['request'])
+            
+            # Ответ
+            if 'response' in record:
+                st.markdown("**Ответ:**")
+                if 'answer' in record['response']:
+                    st.markdown(record['response']['answer'])
+                else:
+                    st.json(record['response'])
         
-        # Статус
-        if 'status' in record:
-            status_color = "🟢" if record['status'] == 'success' else "🔴"
-            st.write(f"**Статус:** {status_color} {record['status']}")
-        
-        # Время обработки
-        if 'processing_time_seconds' in record:
-            st.write(f"**Время обработки:** {record['processing_time_seconds']:.2f} сек")
-        
-        # Количество источников
-        if 'response' in record and 'sources_count' in record['response']:
-            st.write(f"**Источников:** {record['response']['sources_count']}")
-        
-        # Ошибка
-        if 'error' in record and record['error']:
-            st.error(f"**Ошибка:** {record['error']}")
-    
-    with col2:
-        st.markdown("#### 💬 Содержимое")
-        
-        # Запрос
-        if 'request' in record:
-            st.markdown("**Запрос:**")
-            if 'question' in record['request']:
-                st.info(record['request']['question'])
-            else:
-                st.json(record['request'])
-        
-        # Ответ
-        if 'response' in record:
-            st.markdown("**Ответ:**")
-            if 'answer' in record['response']:
-                st.markdown(record['response']['answer'])
-            else:
-                st.json(record['response'])
-    
-    # Источники (если есть)
-    if 'response' in record and 'sources_payload' in record['response']:
-        st.markdown("#### 📚 Источники")
-        sources = record['response']['sources_payload']
-        
-        for i, source in enumerate(sources):
-            with st.expander(f"Источник {i+1}: {source.get('title', 'Без названия')} (релевантность: {source.get('score', 0):.2f})", expanded=False):
+        # Источники (если есть)
+        if 'response' in record and 'sources_payload' in record['response']:
+            st.markdown("#### 📚 Источники")
+            sources = record['response']['sources_payload']
+            
+            for i, source in enumerate(sources):
+                st.markdown(f"**Источник {i+1}: {source.get('title', 'Без названия')}** (релевантность: {source.get('score', 0):.2f})")
+                
                 col1, col2 = st.columns([2, 1])
                 
                 with col1:
@@ -120,6 +128,9 @@ def display_record(record, index):
                         st.write(f"**Размер:** {metadata.get('file_size', 'N/A')} байт")
                         st.write(f"**Чанк:** {metadata.get('chunk_id', 'N/A')} из {metadata.get('total_chunks', 'N/A')}")
                         st.write(f"**Источник:** {metadata.get('source', 'N/A')}")
+                
+                if i < len(sources) - 1:  # Добавляем разделитель между источниками
+                    st.markdown("---")
 
 def main():
     st.title("📄 JSONL Viewer")
@@ -147,36 +158,54 @@ def main():
     # Фильтры
     st.sidebar.header("🔍 Фильтры")
     
-    # Фильтр по статусу
     if 'records' in st.session_state and st.session_state.records:
-        statuses = list(set(record.get('status', 'unknown') for record in st.session_state.records))
-        selected_status = st.sidebar.selectbox("Статус:", ['Все'] + statuses)
+        # Фильтр по дате
+        st.sidebar.subheader("📅 Фильтр по дате")
         
-        # Фильтр по типу
-        types = list(set(record.get('type', 'unknown') for record in st.session_state.records))
-        selected_type = st.sidebar.selectbox("Тип:", ['Все'] + types)
+        # Получаем минимальную и максимальную даты из записей
+        timestamps = []
+        for record in st.session_state.records:
+            if 'timestamp' in record:
+                try:
+                    dt = datetime.fromisoformat(record['timestamp'].replace('Z', '+00:00'))
+                    timestamps.append(dt)
+                except:
+                    continue
         
-        # Фильтр по времени обработки
-        min_time = st.sidebar.number_input("Мин. время обработки (сек):", min_value=0.0, value=0.0)
-        max_time_input = st.sidebar.number_input("Макс. время обработки (сек):", min_value=0.0, value=1000.0, 
-                                               help="Установите 0 для отключения верхнего предела")
-        max_time = max_time_input if max_time_input > 0 else float('inf')
+        if timestamps:
+            min_date = min(timestamps).date()
+            max_date = max(timestamps).date()
+            
+            start_date = st.sidebar.date_input(
+                "Начальная дата:",
+                value=min_date,
+                min_value=min_date,
+                max_value=max_date
+            )
+            
+            end_date = st.sidebar.date_input(
+                "Конечная дата:",
+                value=max_date,
+                min_value=min_date,
+                max_value=max_date
+            )
+        else:
+            start_date = None
+            end_date = None
+        
+
         
         # Применение фильтров
         filtered_records = st.session_state.records.copy()
         
-        if selected_status != 'Все':
-            filtered_records = [r for r in filtered_records if r.get('status') == selected_status]
-        
-        if selected_type != 'Все':
-            filtered_records = [r for r in filtered_records if r.get('type') == selected_type]
-        
-        filtered_records = [r for r in filtered_records 
-                          if min_time <= r.get('processing_time_seconds', 0) and 
-                          (max_time == float('inf') or r.get('processing_time_seconds', 0) <= max_time)]
+        # Фильтр по дате
+        if start_date and end_date:
+            filtered_records = [r for r in filtered_records 
+                              if 'timestamp' in r and 
+                              start_date <= datetime.fromisoformat(r['timestamp'].replace('Z', '+00:00')).date() <= end_date]
         
         st.session_state.filtered_records = filtered_records
-    
+
     # Главная страница
     if 'filtered_records' in st.session_state and st.session_state.filtered_records:
         records = st.session_state.filtered_records
@@ -201,11 +230,20 @@ def main():
         st.subheader(f"📋 Записи ({len(records)} из {len(st.session_state.records)})")
         
         # Опции отображения
-        display_mode = st.radio(
-            "Режим отображения:",
-            ["Развернутый", "Компактный", "Таблица"],
-            horizontal=True
-        )
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            display_mode = st.radio(
+                "Режим отображения:",
+                ["Развернутый", "Компактный", "Таблица"],
+                horizontal=True
+            )
+        
+        with col2:
+            if display_mode == "Развернутый":
+                default_expanded = st.checkbox("Развернуть записи по умолчанию", value=False)
+            else:
+                default_expanded = False
         
         if display_mode == "Таблица":
             # Создание таблицы
@@ -242,9 +280,9 @@ def main():
                     
                     with col2:
                         question = record.get('request', {}).get('question', '')
-                        st.write(f"**Вопрос:** {question[:100]}{'...' if len(question) > 100 else ''}")
+                        st.write(f"**Вопрос:** {question}")
                         answer = record.get('response', {}).get('answer', '')
-                        st.write(f"**Ответ:** {answer[:150]}{'...' if len(answer) > 150 else ''}")
+                        st.write(f"**Ответ:** {answer}")
                     
                     with col3:
                         st.write(f"**{record.get('processing_time_seconds', 0):.2f} сек**")
@@ -253,7 +291,7 @@ def main():
                             st.write("📚 **Детали источников**")
                 else:
                     # Развернутый режим
-                    display_record(record, i)
+                    display_record(record, i, default_expanded)
     
     elif 'records' in st.session_state and not st.session_state.records:
         st.warning("Файл пуст или не содержит валидных JSON записей")
