@@ -1,9 +1,9 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request, Header
 from fastapi.responses import StreamingResponse
 import json
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage
-from typing import List
+from langchain_core.messages import HumanMessage
+from typing import List, Optional
 import logging
 import asyncio
 import time
@@ -22,13 +22,53 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def get_client_ip(request: Request) -> str:
+    """
+    Получает IP адрес клиента из запроса
+    """
+    # Проверяем заголовки прокси
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        # Берем первый IP из списка
+        return forwarded_for.split(",")[0].strip()
+    
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip
+    
+    # Используем клиентский IP
+    if request.client:
+        return request.client.host
+    
+    return "unknown"
+
+
+def get_user_login(request: Request) -> Optional[str]:
+    """
+    Получает логин пользователя из заголовков или запроса
+    """
+    # Можно добавить заголовок X-User-Login или использовать аутентификацию
+    user_login = request.headers.get("X-User-Login")
+    if user_login:
+        return user_login
+    
+    # Если есть Authorization заголовок, можно извлечь логин из токена
+    # Здесь можно добавить логику извлечения из JWT токена
+    
+    return None
+
+
 @router.post("/api/query", response_model=QueryResponse)
-async def query(request: QueryRequest):
+async def query(request: QueryRequest, http_request: Request):
     """
     Обработка запроса пользователя с использованием RAG системы
     """
     start_time = time.time()
     error_message = None
+    
+    # Получаем IP и логин пользователя
+    user_ip = get_client_ip(http_request)
+    user_login = get_user_login(http_request)
     
     try:
         logger.info(f"Получен запрос: {request.question}")
@@ -82,17 +122,35 @@ async def query(request: QueryRequest):
     finally:
         # Логируем вопрос и ответ
         processing_time = time.time() - start_time
-        if 'response' in locals():
-            qa_logger.log_qa(request, response, processing_time, error_message)
+        if 'response' in locals() and 'result' in locals():
+            chunk_ids_to_log = result.get("chunk_ids")
+            logger.info(f"[QUERY] Передаем chunk_ids в логгер: {chunk_ids_to_log}")
+            qa_logger.log_qa(
+                request, 
+                response, 
+                processing_time, 
+                error_message,
+                user_login=user_login,
+                user_ip=user_ip,
+                final_prompt=result.get("final_prompt"),
+                chunk_ids=chunk_ids_to_log
+            )
             logger.info(f"[QUERY] Логирование завершено. Ответ: {len(response.answer)} символов, ошибка: {error_message}")
         else:
             # Если ответ не был создан, логируем только вопрос с ошибкой
-            qa_logger.log_qa(request, QueryResponse(question=request.question, answer=""), processing_time, error_message)
+            qa_logger.log_qa(
+                request, 
+                QueryResponse(question=request.question, answer=""), 
+                processing_time, 
+                error_message,
+                user_login=user_login,
+                user_ip=user_ip
+            )
             logger.warning(f"[QUERY] Логирование с пустым ответом из-за ошибки: {error_message}") 
 
 
 @router.post("/api/query/stream")
-async def query_stream(request: QueryRequest):
+async def query_stream(request: QueryRequest, http_request: Request):
     """
     Потоковая генерация ответа. Возвращает SSE-поток (text/event-stream)
     с чанками токенов по мере генерации.
@@ -102,6 +160,12 @@ async def query_stream(request: QueryRequest):
     answer_parts = []
     sources_count = 0
     response_generated = False
+    
+    # Получаем IP и логин пользователя
+    user_ip = get_client_ip(http_request)
+    user_login = get_user_login(http_request)
+    chunk_ids = []
+    final_prompt = None
     
     try:
         logger.info(
@@ -118,11 +182,16 @@ async def query_stream(request: QueryRequest):
             try:
                 loop = asyncio.get_running_loop()
                 source_documents = await loop.run_in_executor(
-                    None, lambda: rag_system.vector_store.similarity_search(request.question, k=5)
+                    None, lambda: rag_system.retriever.invoke(request.question)
                 )
                 logger.info("[STREAM] retrieved %s source documents for context", len(source_documents))
                 for i, doc in enumerate(source_documents):
                     logger.info("[STREAM] doc %s: content_len=%s, metadata=%s", i, len(getattr(doc, 'page_content', '')), getattr(doc, 'metadata', {}))
+
+                    if hasattr(doc, 'metadata') and doc.metadata:
+                        db_id = doc.metadata.get("db_id")
+                        if db_id:
+                            chunk_ids.append(db_id)
             except Exception as e:
                 logger.warning("[STREAM] similarity_search failed: %s", e)
                 source_documents = []
@@ -165,11 +234,11 @@ async def query_stream(request: QueryRequest):
         )
 
         # Настройка LLM c потоковой отдачей (используем те же параметры, что и в системе)
-        repo_id = "library/qwen3:32b"
+        repo_id = "model-run-vekow-trunk"
         logger.info("[STREAM] initializing ChatOpenAI(streaming=True) ...")
         llm = ChatOpenAI(
             openai_api_key="dummy_key",
-            openai_api_base="https://10f9698e-46b7-4a33-be37-f6495989f01f.modelrun.inference.cloud.ru/v1",
+            openai_api_base="https://565df812-6798-4e3d-9a62-18d67e029d53.modelrun.inference.cloud.ru/v1",
             model=repo_id,
             temperature=0.1,
             timeout=600,
@@ -224,6 +293,7 @@ async def query_stream(request: QueryRequest):
 
             def produce_tokens():
                 nonlocal response_generated
+                nonlocal user_login, user_ip, final_prompt, chunk_ids
                 try:
                     token_count = 0
                     for chunk in llm.stream([HumanMessage(content=final_prompt)]):
@@ -232,11 +302,7 @@ async def query_stream(request: QueryRequest):
                             token_count += 1
                             answer_parts.append(text)  # Собираем части ответа для логирования
                             response_generated = True  # Отмечаем, что ответ начал генерироваться
-                            if token_count <= 5 or token_count % 10 == 0:
-                                logger.info(
-                                    "[STREAM] chunk #%s len=%s preview='%s'",
-                                    token_count, len(text), text[:20].replace("\n", " ")
-                                )
+                            
                             loop.call_soon_threadsafe(queue.put_nowait, ("token", text))
                     logger.info("[STREAM] completed. total_chunks=%s", token_count)
 
@@ -257,7 +323,11 @@ async def query_stream(request: QueryRequest):
                             sources_count=sources_count,
                             sources_payload=sources_payload,
                             processing_time=processing_time,
-                            error=error_message
+                            error=error_message,
+                            user_login=user_login,
+                            user_ip=user_ip,
+                            final_prompt=final_prompt,
+                            chunk_ids=chunk_ids if chunk_ids else None
                         )
                     answer_text = full_answer.split('</think>')[-1].strip()
                     logger.info(f"[STREAM] Логирование завершено. Ответ: {len(answer_text)} символов, ошибка: {error_message}")
@@ -309,7 +379,11 @@ async def query_stream(request: QueryRequest):
                     sources_count=sources_count,
                     sources_payload=None,
                     processing_time=processing_time,
-                    error=error_message
+                    error=error_message,
+                    user_login=user_login,
+                    user_ip=user_ip,
+                    final_prompt=final_prompt,
+                    chunk_ids=chunk_ids if chunk_ids else None
                 )
                 logger.info(f"[STREAM] Логирование завершено. Ответ: {len(full_answer)} символов, ошибка: {error_message}")
             else:
@@ -319,14 +393,14 @@ async def query_stream(request: QueryRequest):
 
 
 @router.get("/api/query/stream")
-async def query_stream_get(question: str = Query(..., description="Пользовательский вопрос")):
+async def query_stream_get(http_request: Request, question: str = Query(..., description="Пользовательский вопрос")):
     """
     Потоковая генерация через GET для совместимости с EventSource.
     Поведение идентично POST /api/query/stream, но вопрос передаётся как query-параметр.
     """
     try:
         req = QueryRequest(question=question, return_sources=False)
-        return await query_stream(req)
+        return await query_stream(req, http_request)
     except HTTPException:
         raise
     except Exception as e:

@@ -8,15 +8,17 @@ from datetime import datetime
 
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.retrievers import BM25Retriever
-from langchain_community.vectorstores import FAISS
 from langchain.retrievers import EnsembleRetriever
+from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI
-from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableParallel
 
 from .config import settings
 from .document_processor import load_docx_files, split_documents, get_document_stats
+from .database import get_db_session
+from .models import Chunk
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +334,9 @@ class RAGSystem:
                 chunks = self.retriever.invoke(question)
             context = format_documents(chunks)
             
+            # Формируем финальный промпт из шаблона
+            final_prompt = template.format(context=context, question=question)
+            
             chain = prompt | self.llm
             result = chain.invoke({"context": context, "question": question})
             
@@ -340,9 +345,19 @@ class RAGSystem:
             # Обработка результата от RetrievalQA
             answer = result if result else "Не удалось получить ответ"
 
-            source_documents = self.vector_store.similarity_search(question, k=5)
+            # Используем те же чанки для извлечения ID
+            source_documents = chunks if isinstance(chunks, list) else self.vector_store.similarity_search(question, k=5)
             logger.info(f"Тип чанков {type(source_documents)}")
-            logger.info(f"Найденные чанки: {source_documents}")
+            logger.info(f"Найденные чанки: {len(source_documents) if isinstance(source_documents, list) else 'N/A'}")
+            
+            # Извлекаем ID чанков из метаданных
+            chunk_ids = []
+            if isinstance(source_documents, list):
+                for doc in source_documents:
+                    if hasattr(doc, 'metadata') and doc.metadata:
+                        db_id = doc.metadata.get("db_id")
+                        if db_id:
+                            chunk_ids.append(db_id)
             
             # Формирование источников
             sources = []
@@ -366,18 +381,32 @@ class RAGSystem:
                                 "metadata": doc.metadata
                             })
             
-            logger.info(f"Запрос обработан, найдено источников: {len(sources)}")
+            logger.info(f"Запрос обработан, найдено источников: {len(sources)}, chunk_ids: {chunk_ids}")
             
             return {
                 "answer": answer,
-                "sources": sources
+                "sources": sources,
+                "final_prompt": final_prompt,
+                "chunk_ids": chunk_ids
             }
             
         except Exception as e:
             logger.error(f"Ошибка при обработке запроса: {e}")
+            # Получаем chunk_ids даже при ошибке, если чанки были найдены
+            chunk_ids = []
+            try:
+                if self.vector_store:
+                    error_docs = self.vector_store.similarity_search(question, k=5)
+                    if error_docs:
+                        chunk_ids = self._get_chunk_ids_from_documents(error_docs)
+            except Exception as e2:
+                logger.warning(f"Не удалось получить chunk_ids при ошибке: {e2}")
+            
             return {
                 "answer": f"Произошла ошибка при обработке запроса: {str(e)}",
-                "sources": []
+                "sources": [],
+                "final_prompt": None,
+                "chunk_ids": chunk_ids
             }
     
     def similarity_search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.rag_system import rag_system
 from app.api import chat, system
+from app.database import init_db
 
 # Настройка логирования
 logging.basicConfig(
@@ -23,6 +24,13 @@ async def lifespan(app: FastAPI):
     Управление жизненным циклом приложения
     """
     # Startup
+    logger.info("Инициализация базы данных...")
+    try:
+        init_db()
+        logger.info("База данных инициализирована")
+    except Exception as e:
+        logger.error(f"Ошибка при инициализации БД: {e}")
+    
     logger.info("Запуск RAG системы...")
     try:
         # Инициализация RAG системы в фоновом режиме

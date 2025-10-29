@@ -1,4 +1,25 @@
 services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: rag-postgres
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-rag_db}
+      - POSTGRES_USER=${POSTGRES_USER:-rag_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-rag_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - rag-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Backend RAG System
   rag-app:
     build:
@@ -7,14 +28,9 @@ services:
     container_name: rag-backend
     ports:
       - "8000:8000"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    runtime: nvidia
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME:-/app/models/multilingual-e5-large}
       - DOCS_PATH=/app/docs
@@ -24,6 +40,11 @@ services:
       - OPENAI_MODEL_NAME=${OPENAI_MODEL_NAME:-gpt-3.5-turbo}
       - MAX_TOKENS=${MAX_TOKENS:-4000}
       - TEMPERATURE=${TEMPERATURE:-0.7}
+      - POSTGRES_DB=${POSTGRES_DB:-rag_db}
+      - POSTGRES_USER=${POSTGRES_USER:-rag_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-rag_password}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
     volumes:
       - ./backend/data/logs:/app/data/logs
       - ./docs:/app/docs:ro
@@ -31,6 +52,9 @@ services:
       - faiss-index-data:/app/data/faiss_index
     networks:
       - rag-network
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -67,4 +91,5 @@ networks:
     driver: bridge
 
 volumes:
-  faiss-index-data: 
+  faiss-index-data:
+  postgres-data: 

@@ -32,6 +32,18 @@ class Settings(BaseSettings):
     react_app_api_url: Optional[str] = Field(default=None, env="REACT_APP_API_URL")
     react_app_environment: Optional[str] = Field(default=None, env="REACT_APP_ENVIRONMENT")
     
+    # PostgreSQL Configuration
+    postgres_db: str = Field(default="rag_db", env="POSTGRES_DB")
+    postgres_user: str = Field(default="rag_user", env="POSTGRES_USER")
+    postgres_password: str = Field(default="rag_password", env="POSTGRES_PASSWORD")
+    postgres_host: str = Field(default="localhost", env="POSTGRES_HOST")
+    postgres_port: int = Field(default=5432, env="POSTGRES_PORT")
+    
+    @property
+    def database_url(self) -> str:
+        """Формирует URL подключения к PostgreSQL"""
+        return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+    
     class Config:
         env_file = ".env"
         case_sensitive = False

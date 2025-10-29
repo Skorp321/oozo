@@ -1,11 +1,14 @@
 import os
 import logging
-from typing import List, Dict, Any
+import json
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 from docx import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema import Document as LangChainDocument
+from langchain_core.documents import Document as LangChainDocument
 from .config import settings
+from .database import get_db_session
+from .models import Chunk
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +63,63 @@ def extract_text_from_docx(file_path: str) -> str:
         raise
 
 
+def save_chunks_to_db(chunks: List[LangChainDocument]) -> List[int]:
+    """
+    Сохраняет чанки в базу данных
+    
+    Args:
+        chunks: Список LangChain документов (чанков)
+        
+    Returns:
+        Список ID сохраненных чанков
+    """
+    chunk_ids = []
+    try:
+        with get_db_session() as db:
+            for chunk in chunks:
+                try:
+                    # Извлекаем метаданные
+                    metadata = chunk.metadata or {}
+                    chunk_metadata = {
+                        k: v for k, v in metadata.items() 
+                        if k not in ['chunk_id', 'total_chunks']
+                    }
+                    
+                    db_chunk = Chunk(
+                        content=chunk.page_content,
+                        document_title=metadata.get("title"),
+                        file_path=metadata.get("file_path"),
+                        chunk_index=metadata.get("chunk_id"),
+                        total_chunks=metadata.get("total_chunks"),
+                        metadata_json=json.dumps(chunk_metadata, ensure_ascii=False) if chunk_metadata else None
+                    )
+                    db.add(db_chunk)
+                    db.flush()  # Получаем ID без коммита
+                    chunk_ids.append(db_chunk.id)
+                except Exception as e:
+                    logger.error(f"Ошибка при сохранении чанка в БД: {e}")
+                    continue
+            db.commit()
+            logger.info(f"Сохранено {len(chunk_ids)} чанков в БД")
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении чанков в БД: {e}")
+    
+    return chunk_ids
+
+
 def split_documents(documents: List[Dict[str, Any]], 
                    chunk_size: int = None, 
-                   chunk_overlap: int = None) -> List[LangChainDocument]:
+                   chunk_overlap: int = None,
+                   save_to_db: bool = True) -> List[LangChainDocument]:
     """
     Разбивает документы на чанки с помощью RecursiveCharacterTextSplitter
+    и сохраняет их в базу данных
+    
+    Args:
+        documents: Список документов для разбивки
+        chunk_size: Размер чанка
+        chunk_overlap: Перекрытие между чанками
+        save_to_db: Сохранять ли чанки в БД (по умолчанию True)
     """
     if chunk_size is None:
         chunk_size = settings.chunk_size
@@ -80,7 +135,7 @@ def split_documents(documents: List[Dict[str, Any]],
     
     langchain_docs = []
     
-    for doc in documents:
+    for i, doc in enumerate(documents, 1):
         try:
             # Создаем LangChain Document
             langchain_doc = LangChainDocument(
@@ -96,20 +151,32 @@ def split_documents(documents: List[Dict[str, Any]],
             # Разбиваем на чанки
             chunks = text_splitter.split_documents([langchain_doc])
             
-            # Добавляем информацию о чанке в метаданные
-            for i, chunk in enumerate(chunks):
-                chunk.metadata.update({
-                    "chunk_id": i,
-                    "total_chunks": len(chunks)
-                })
-            
             langchain_docs.extend(chunks)
             logger.info(f"Документ '{doc['title']}' разбит на {len(chunks)} чанков")
             
         except Exception as e:
             logger.error(f"Ошибка при разбивке документа '{doc['title']}': {e}")
-    
+                
+    # Добавляем информацию о чанке в метаданные
+    for i, chunk in enumerate(langchain_docs, 1):
+        chunk.metadata.update({
+            "chunk_id": i,
+            "total_chunks": len(langchain_docs)
+        })
+        langchain_docs[i-1].metadata = chunk.metadata
     logger.info(f"Всего создано чанков: {len(langchain_docs)}")
+    
+    # Сохраняем чанки в БД если нужно
+    if save_to_db and langchain_docs:
+        try:
+            chunk_ids = save_chunks_to_db(langchain_docs)
+            # Сохраняем ID в метаданные чанков для последующего использования
+            for i, chunk in enumerate(langchain_docs):
+                if i < len(chunk_ids):
+                    chunk.metadata["db_id"] = chunk_ids[i]
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении чанков в БД: {e}")
+    
     return langchain_docs
 
 
