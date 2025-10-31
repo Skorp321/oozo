@@ -4,8 +4,7 @@
 
 ## Структура
 
-- `000_check_tables.sql` - вспомогательный скрипт для проверки существования таблиц
-- `001_init_schema.sql` - первоначальная миграция с созданием всех таблиц
+- `init_schema.sql` - единый скрипт для создания всей схемы базы данных с нуля
 
 ## Применение миграций
 
@@ -35,26 +34,12 @@ docker compose exec rag-app python scripts/apply_migrations.py
 docker compose exec postgres psql -U rag_user -d rag_db
 
 # Или применение через psql из файла
-docker compose exec -T postgres psql -U rag_user -d rag_db < migrations/001_init_schema.sql
+docker compose exec -T postgres psql -U rag_user -d rag_db < migrations/init_schema.sql
 ```
-
-## Создание новой миграции
-
-1. Создайте новый файл в директории `migrations/` с номером следующей миграции:
-   ```
-   002_add_new_column.sql
-   ```
-
-2. Файлы миграций применяются в порядке сортировки имен файлов (алфавитно-цифровой порядок)
-
-3. Включите в миграцию:
-   - Проверки существования таблиц/колонок (`IF NOT EXISTS`)
-   - Откат изменений (если необходимо)
-   - Комментарии для документации
 
 ## Схема базы данных
 
-Все таблицы создаются в схеме `oozo-schema`. Схема создается автоматически при применении миграции `001_init_schema.sql`.
+Все таблицы создаются в схеме `oozo-schema`. Схема создается автоматически при применении миграции `init_schema.sql`.
 
 ## Структура таблиц
 
@@ -63,11 +48,60 @@ docker compose exec -T postgres psql -U rag_user -d rag_db < migrations/001_init
 ### Таблица `oozo-schema.chunks`
 Хранит чанки документов, используемые для создания векторной БД.
 
+**Поля:**
+- `id` - ID чанка (SERIAL PRIMARY KEY)
+- `content` - Текст чанка (TEXT NOT NULL)
+- `document_title` - Название документа (VARCHAR(500))
+- `file_path` - Путь к файлу (VARCHAR(1000))
+- `file_hash` - SHA256 хэш-сумма файла (VARCHAR(64))
+- `chunk_index` - Индекс чанка в документе (INTEGER)
+- `total_chunks` - Всего чанков в документе (INTEGER)
+- `status` - Статус чанка: actual (актуальный) или stored (хранимый) (VARCHAR(50), DEFAULT 'actual')
+- `metadata_json` - Дополнительные метаданные в JSON формате (TEXT)
+- `created_at` - Дата создания (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+
+**Индексы:**
+- `idx_chunks_document_title` - по document_title
+- `idx_chunks_file_path` - по file_path
+- `idx_chunks_file_hash` - по file_hash
+- `idx_chunks_status` - по status
+
 ### Таблица `oozo-schema.query_logs`
 Хранит логи запросов пользователей к системе.
 
+**Поля:**
+- `id` - ID записи (SERIAL PRIMARY KEY)
+- `user_login` - Логин пользователя (VARCHAR(255))
+- `user_ip` - IP адрес пользователя (VARCHAR(45))
+- `question` - Вопрос пользователя (TEXT NOT NULL)
+- `final_prompt` - Финальный промпт, отправленный в LLM (TEXT)
+- `answer` - Ответ системы (TEXT)
+- `processing_time` - Время обработки в секундах (VARCHAR(50))
+- `error_message` - Сообщение об ошибке, если есть (TEXT)
+- `status` - Статус: success или error (VARCHAR(50), DEFAULT 'success')
+- `created_at` - Дата создания записи (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+
+**Индексы:**
+- `idx_query_logs_user_login` - по user_login
+- `idx_query_logs_user_ip` - по user_ip
+- `idx_query_logs_status` - по status
+- `idx_query_logs_created_at` - по created_at
+
 ### Таблица `oozo-schema.query_log_chunks`
 Промежуточная таблица для связи many-to-many между `query_logs` и `chunks`.
+
+**Поля:**
+- `query_log_id` - ID записи из query_logs (INTEGER NOT NULL, FOREIGN KEY)
+- `chunk_id` - ID чанка из chunks (INTEGER NOT NULL, FOREIGN KEY)
+- PRIMARY KEY (query_log_id, chunk_id)
+
+**Внешние ключи:**
+- `fk_query_log_chunks_query_log_id` → `oozo-schema.query_logs(id)` ON DELETE CASCADE
+- `fk_query_log_chunks_chunk_id` → `oozo-schema.chunks(id)` ON DELETE CASCADE
+
+**Индексы:**
+- `idx_query_log_chunks_query_log_id` - по query_log_id
+- `idx_query_log_chunks_chunk_id` - по chunk_id
 
 ## Проверка состояния миграций
 
@@ -79,8 +113,4 @@ docker compose exec postgres psql -U rag_user -d rag_db -c "\dt oozo-schema.*"
 
 # Показать все схемы
 docker compose exec postgres psql -U rag_user -d rag_db -c "\dn"
-
-# Или через скрипт проверки:
-docker compose exec -T postgres psql -U rag_user -d rag_db < migrations/000_check_tables.sql
 ```
-
