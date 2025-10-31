@@ -30,8 +30,10 @@ class Chunk(Base):
     content = Column(Text, nullable=False, comment="Текст чанка")
     document_title = Column(String(500), nullable=True, comment="Название документа")
     file_path = Column(String(1000), nullable=True, comment="Путь к файлу")
+    file_hash = Column(String(64), nullable=True, comment="SHA256 хэш-сумма файла")
     chunk_index = Column(Integer, nullable=True, comment="Индекс чанка в документе")
     total_chunks = Column(Integer, nullable=True, comment="Всего чанков в документе")
+    status = Column(String(10), default="actual", nullable=False, comment="Статус чанка: actual (актуальный) или stored (хранимый)")
     metadata_json = Column(Text, nullable=True, comment="Дополнительные метаданные в JSON формате")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, comment="Дата создания")
     

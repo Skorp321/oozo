@@ -451,21 +451,19 @@ class RAGSystem:
                     "chunks_created": 0,
                     "index_size_mb": 0
                 }
-            
-            # Разбивка на чанки
+
             chunks = split_documents(self.documents)
-            
-            # Создание нового векторного хранилища
             self.vector_store = FAISS.from_documents(chunks, self.embeddings)
-            
-            # Сохранение
             self._save_vector_store()
-            
-            # Обновление статистики
             self._update_stats(chunks)
             
-            # Пересоздание QA цепочки
-            self._setup_qa_chain()
+            # Пересоздание гибридного ретривера
+            if chunks:
+                bm25 = BM25Retriever.from_documents(chunks)
+                self.retriever = EnsembleRetriever(
+                    retrievers=[bm25, self.vector_store.as_retriever(search_kwargs={"k": 5})],
+                    weights=[0.5, 0.5]
+                )
             
             logger.info("Переиндексация завершена")
             

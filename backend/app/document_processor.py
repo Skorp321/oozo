@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+import hashlib
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from docx import Document
@@ -11,6 +12,28 @@ from .database import get_db_session
 from .models import Chunk
 
 logger = logging.getLogger(__name__)
+
+
+def calculate_file_hash(file_path: str) -> str:
+    """
+    Вычисляет SHA256 хэш-сумму файла
+    
+    Args:
+        file_path: Путь к файлу
+        
+    Returns:
+        SHA256 хэш-сумма в виде hex-строки
+    """
+    sha256_hash = hashlib.sha256()
+    try:
+        with open(file_path, "rb") as f:
+            # Читаем файл по частям для экономии памяти
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return sha256_hash.hexdigest()
+    except Exception as e:
+        logger.error(f"Ошибка при вычислении хэша файла {file_path}: {e}")
+        return ""
 
 
 def load_docx_files(docs_path: str) -> List[Dict[str, Any]]:
@@ -29,13 +52,15 @@ def load_docx_files(docs_path: str) -> List[Dict[str, Any]]:
             logger.info(f"Загрузка документа: {file_path}")
             text = extract_text_from_docx(str(file_path))
             if text.strip():
+                file_hash = calculate_file_hash(str(file_path))
                 documents.append({
                     "title": file_path.stem,
                     "content": text,
                     "file_path": str(file_path),
-                    "file_size": file_path.stat().st_size
+                    "file_size": file_path.stat().st_size,
+                    "file_hash": file_hash
                 })
-                logger.info(f"Документ загружен: {file_path.name} ({len(text)} символов)")
+                logger.info(f"Документ загружен: {file_path.name} ({len(text)} символов, hash: {file_hash[:16]}...)")
             else:
                 logger.warning(f"Документ пустой: {file_path}")
         except Exception as e:
@@ -67,6 +92,9 @@ def save_chunks_to_db(chunks: List[LangChainDocument]) -> List[int]:
     """
     Сохраняет чанки в базу данных
     
+    Перед сохранением новых чанков обновляет статус всех существующих чанков на "stored".
+    Новые чанки сохраняются со статусом "actual".
+    
     Args:
         chunks: Список LangChain документов (чанков)
         
@@ -76,6 +104,19 @@ def save_chunks_to_db(chunks: List[LangChainDocument]) -> List[int]:
     chunk_ids = []
     try:
         with get_db_session() as db:
+            # Перед сохранением новых чанков помечаем все существующие как "stored"
+            from sqlalchemy import text
+            result = db.execute(
+                text('UPDATE "oozo-schema".chunks SET status = :stored_status WHERE status = :actual_status'),
+                {"stored_status": "stored", "actual_status": "actual"}
+            )
+            updated_count = result.rowcount
+            db.commit()  # Применяем обновление перед добавлением новых чанков
+            if updated_count > 0:
+                logger.info(f"Обновлено статусов существующих чанков на 'stored': {updated_count}")
+            else:
+                logger.debug("Нет чанков со статусом 'actual' для обновления")
+            
             for chunk in chunks:
                 try:
                     # Извлекаем метаданные
@@ -89,8 +130,10 @@ def save_chunks_to_db(chunks: List[LangChainDocument]) -> List[int]:
                         content=chunk.page_content,
                         document_title=metadata.get("title"),
                         file_path=metadata.get("file_path"),
+                        file_hash=metadata.get("file_hash"),
                         chunk_index=metadata.get("chunk_id"),
                         total_chunks=metadata.get("total_chunks"),
+                        status="actual",  # Новые чанки получают статус "actual"
                         metadata_json=json.dumps(chunk_metadata, ensure_ascii=False) if chunk_metadata else None
                     )
                     db.add(db_chunk)
@@ -137,18 +180,17 @@ def split_documents(documents: List[Dict[str, Any]],
     
     for i, doc in enumerate(documents, 1):
         try:
-            # Создаем LangChain Document
             langchain_doc = LangChainDocument(
                 page_content=doc["content"],
                 metadata={
-                    "title": doc["title"],
-                    "file_path": doc["file_path"],
-                    "file_size": doc["file_size"],
-                    "source": doc["title"]
+                    "title": doc.get("title"),
+                    "file_path": doc.get("file_path"),
+                    "file_size": doc.get("file_size"),
+                    "file_hash": doc.get("file_hash"),
+                    "source": doc.get("title")
                 }
             )
-            
-            # Разбиваем на чанки
+
             chunks = text_splitter.split_documents([langchain_doc])
             
             langchain_docs.extend(chunks)
@@ -157,14 +199,15 @@ def split_documents(documents: List[Dict[str, Any]],
         except Exception as e:
             logger.error(f"Ошибка при разбивке документа '{doc['title']}': {e}")
                 
-    # Добавляем информацию о чанке в метаданные
+    # Добавляем глобальную нумерацию чанков (по всем документам)
+    # chunk_index будет от 1 до общего количества всех чанков
+    total_chunks = len(langchain_docs)
     for i, chunk in enumerate(langchain_docs, 1):
         chunk.metadata.update({
-            "chunk_id": i,
-            "total_chunks": len(langchain_docs)
+            "chunk_id": i,  # Глобальный индекс чанка (от 1 до total_chunks)
+            "total_chunks": total_chunks  # Общее количество всех чанков
         })
-        langchain_docs[i-1].metadata = chunk.metadata
-    logger.info(f"Всего создано чанков: {len(langchain_docs)}")
+    logger.info(f"Всего создано чанков: {total_chunks}, индексация: 1..{total_chunks}")
     
     # Сохраняем чанки в БД если нужно
     if save_to_db and langchain_docs:
