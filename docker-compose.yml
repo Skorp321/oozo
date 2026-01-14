@@ -15,7 +15,7 @@ services:
       - rag-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag_user}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag_user} -d ${POSTGRES_DB:-rag_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -57,26 +57,24 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
       interval: 30s
-      timeout: 30s
+      timeout: 10s
       retries: 3
       start_period: 60s
 
-  # Frontend React App
-  frontend:
+  # Frontend Streamlit App
+  streamlit_frontend:
     build:
-      context: ./frontend
+      context: ./streamlit_frontend
       dockerfile: Dockerfile
-    container_name: rag-frontend
+    container_name: rag-streamlit-frontend
     ports:
-      - "3000:3000"
+      - "8501:8501"
     environment:
-      - REACT_APP_API_URL=http://rag-app:8000
-      - REACT_APP_ENVIRONMENT=production
+      - API_BASE_URL=http://rag-app:8000
     volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
+      - ./streamlit_frontend:/app
     networks:
       - rag-network
     depends_on:

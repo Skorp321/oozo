@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Table
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 
 Base = declarative_base()
@@ -35,7 +35,7 @@ class Chunk(Base):
     total_chunks = Column(Integer, nullable=True, comment="Всего чанков в документе")
     status = Column(String(10), default="actual", nullable=False, comment="Статус чанка: actual (актуальный) или stored (хранимый)")
     metadata_json = Column(Text, nullable=True, comment="Дополнительные метаданные в JSON формате")
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, comment="Дата создания")
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, comment="Дата создания в UTC")
     
     # Связь с query_logs через промежуточную таблицу
     query_logs = relationship("QueryLog", secondary=query_log_chunks, back_populates="chunks")
@@ -57,7 +57,8 @@ class QueryLog(Base):
     processing_time = Column(String(50), nullable=True, comment="Время обработки в секундах")
     error_message = Column(Text, nullable=True, comment="Сообщение об ошибке, если есть")
     status = Column(String(50), default="success", nullable=False, comment="Статус: success или error")
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, comment="Дата создания записи")
+    timezone = Column(String(50), nullable=True, comment="Временная зона пользователя (например, Europe/Moscow, UTC)")
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, comment="Дата создания записи в UTC")
     
     # Связь с chunks через промежуточную таблицу
     chunks = relationship("Chunk", secondary=query_log_chunks, back_populates="query_logs")

@@ -58,6 +58,19 @@ def get_user_login(request: Request) -> Optional[str]:
     return None
 
 
+def get_user_timezone(request: Request) -> Optional[str]:
+    """
+    Получает временную зону пользователя из заголовков запроса
+    """
+    # Проверяем заголовок X-User-Timezone
+    user_timezone = request.headers.get("X-User-Timezone")
+    if user_timezone:
+        return user_timezone
+    
+    # Если заголовок не указан, возвращаем None
+    return None
+
+
 @router.post("/api/query", response_model=QueryResponse)
 async def query(request: QueryRequest, http_request: Request):
     """
@@ -66,9 +79,10 @@ async def query(request: QueryRequest, http_request: Request):
     start_time = time.time()
     error_message = None
     
-    # Получаем IP и логин пользователя
+    # Получаем IP, логин и timezone пользователя
     user_ip = get_client_ip(http_request)
     user_login = get_user_login(http_request)
+    user_timezone = get_user_timezone(http_request)
     
     try:
         logger.info(f"Получен запрос: {request.question}")
@@ -133,7 +147,8 @@ async def query(request: QueryRequest, http_request: Request):
                 user_login=user_login,
                 user_ip=user_ip,
                 final_prompt=result.get("final_prompt"),
-                chunk_ids=chunk_ids_to_log
+                chunk_ids=chunk_ids_to_log,
+                user_timezone=user_timezone
             )
             logger.info(f"[QUERY] Логирование завершено. Ответ: {len(response.answer)} символов, ошибка: {error_message}")
         else:
@@ -144,7 +159,8 @@ async def query(request: QueryRequest, http_request: Request):
                 processing_time, 
                 error_message,
                 user_login=user_login,
-                user_ip=user_ip
+                user_ip=user_ip,
+                user_timezone=user_timezone
             )
             logger.warning(f"[QUERY] Логирование с пустым ответом из-за ошибки: {error_message}") 
 
@@ -161,9 +177,10 @@ async def query_stream(request: QueryRequest, http_request: Request):
     sources_count = 0
     response_generated = False
     
-    # Получаем IP и логин пользователя
+    # Получаем IP, логин и timezone пользователя
     user_ip = get_client_ip(http_request)
     user_login = get_user_login(http_request)
+    user_timezone = get_user_timezone(http_request)
     chunk_ids = []
     final_prompt = None
     
@@ -182,9 +199,18 @@ async def query_stream(request: QueryRequest, http_request: Request):
             try:
                 loop = asyncio.get_running_loop()
                 source_documents = await loop.run_in_executor(
-                    None, lambda: rag_system.retriever.invoke(request.question)
+                    None, lambda: rag_system.retrieve_documents(request.question, k=5)
                 )
-                logger.info("[STREAM] retrieved %s source documents for context", len(source_documents))
+                embeddings_kind = (
+                    type(rag_system.embeddings).__name__
+                    if getattr(rag_system, "embeddings", None)
+                    else "unknown"
+                )
+                logger.info(
+                    "[STREAM] retrieved %s source documents for context (embedder=%s)",
+                    len(source_documents),
+                    embeddings_kind,
+                )
                 for i, doc in enumerate(source_documents):
                     logger.info("[STREAM] doc %s: content_len=%s, metadata=%s", i, len(getattr(doc, 'page_content', '')), getattr(doc, 'metadata', {}))
 
@@ -327,7 +353,8 @@ async def query_stream(request: QueryRequest, http_request: Request):
                             user_login=user_login,
                             user_ip=user_ip,
                             final_prompt=final_prompt,
-                            chunk_ids=chunk_ids if chunk_ids else None
+                            chunk_ids=chunk_ids if chunk_ids else None,
+                            user_timezone=user_timezone
                         )
                     answer_text = full_answer.split('</think>')[-1].strip()
                     logger.info(f"[STREAM] Логирование завершено. Ответ: {len(answer_text)} символов, ошибка: {error_message}")
@@ -383,7 +410,8 @@ async def query_stream(request: QueryRequest, http_request: Request):
                     user_login=user_login,
                     user_ip=user_ip,
                     final_prompt=final_prompt,
-                    chunk_ids=chunk_ids if chunk_ids else None
+                    chunk_ids=chunk_ids if chunk_ids else None,
+                    user_timezone=user_timezone
                 )
                 logger.info(f"[STREAM] Логирование завершено. Ответ: {len(full_answer)} символов, ошибка: {error_message}")
             else:

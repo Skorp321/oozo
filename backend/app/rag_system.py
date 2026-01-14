@@ -10,7 +10,7 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain_community.vectorstores import FAISS
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableParallel
@@ -66,13 +66,32 @@ class RAGSystem:
         Создание модели эмбеддингов
         """
         try:
-            logger.info(f"Загрузка модели эмбеддингов: {settings.embedding_model_name}")
-            self.embeddings = HuggingFaceEmbeddings(
-                model_name=settings.embedding_model_name,
-                model_kwargs={'device': 'cpu'},
-                encode_kwargs={'normalize_embeddings': True}
+            # Определяем, является ли модель облачной (qwen3-0.6B-embedded через vllm)
+            # Используем облачный эмбеддер если:
+            # 1. Явно указан embedding_api_base, или
+            # 2. Название модели содержит "qwen" (qwen3-0.6B-embedded)
+            is_cloud_model = (
+                settings.embedding_api_base is not None or
+                "qwen" in settings.embedding_model_name.lower()
             )
-            logger.info("Модель эмбеддингов загружена")
+            
+            if is_cloud_model:
+                # Используем облачный эмбеддер через vllm
+                api_base = settings.embedding_api_base or "http://localhost:8000/v1"
+                api_key = settings.embedding_api_key or settings.openai_api_key or "dummy_key"
+                
+                logger.info(
+                    "Используем облачный эмбеддер %s через vllm по адресу %s",
+                    settings.embedding_model_name,
+                    api_base,
+                )
+                self.embeddings = OpenAIEmbeddings(
+                    model=settings.embedding_model_name,
+                    openai_api_key=api_key,
+                    openai_api_base=api_base,
+                    timeout=600,
+                )
+                logger.info("Модель эмбеддингов создана")
         except Exception as e:
             logger.error(f"Ошибка при загрузке модели эмбеддингов: {e}")
             raise
@@ -295,6 +314,21 @@ class RAGSystem:
                     streaming=True,
                     timeout=600  # 10 minutes
                 )      
+
+    def retrieve_documents(self, question: str, k: int = 5):
+        """
+        Получение релевантных документов с использованием текущего эмбеддера
+        """
+        if not self._initialized or not self.vector_store:
+            return []
+        
+        try:
+            if self.retriever is not None:
+                return self.retriever.invoke(question)
+            return self.vector_store.similarity_search(question, k=k)
+        except Exception as exc:
+            logger.error(f"Ошибка при получении документов: {exc}")
+            return []
     
     def query(self, question: str, return_sources: bool = True) -> Dict[str, Any]:
         """

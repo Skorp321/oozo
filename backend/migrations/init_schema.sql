@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS "oozo-schema".chunks (
     total_chunks INTEGER,
     status VARCHAR(50) DEFAULT 'actual' NOT NULL,
     metadata_json TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC') NOT NULL
 );
 
 -- Комментарии к таблице chunks
@@ -33,7 +33,7 @@ COMMENT ON COLUMN "oozo-schema".chunks.chunk_index IS 'Индекс чанка �
 COMMENT ON COLUMN "oozo-schema".chunks.total_chunks IS 'Всего чанков в документе';
 COMMENT ON COLUMN "oozo-schema".chunks.status IS 'Статус чанка: actual (актуальный) или stored (хранимый)';
 COMMENT ON COLUMN "oozo-schema".chunks.metadata_json IS 'Дополнительные метаданные в JSON формате';
-COMMENT ON COLUMN "oozo-schema".chunks.created_at IS 'Дата создания';
+COMMENT ON COLUMN "oozo-schema".chunks.created_at IS 'Дата создания в UTC';
 
 -- Индексы для таблицы chunks
 CREATE INDEX IF NOT EXISTS idx_chunks_file_hash ON "oozo-schema".chunks(file_hash);
@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS "oozo-schema".query_logs (
     processing_time VARCHAR(50),
     error_message TEXT,
     status VARCHAR(50) DEFAULT 'success' NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+    timezone VARCHAR(50),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC') NOT NULL
 );
 
 -- Комментарии к таблице query_logs
@@ -64,7 +65,8 @@ COMMENT ON COLUMN "oozo-schema".query_logs.answer IS 'Ответ системы'
 COMMENT ON COLUMN "oozo-schema".query_logs.processing_time IS 'Время обработки в секундах';
 COMMENT ON COLUMN "oozo-schema".query_logs.error_message IS 'Сообщение об ошибке, если есть';
 COMMENT ON COLUMN "oozo-schema".query_logs.status IS 'Статус: success или error';
-COMMENT ON COLUMN "oozo-schema".query_logs.created_at IS 'Дата создания записи';
+COMMENT ON COLUMN "oozo-schema".query_logs.timezone IS 'Временная зона пользователя (например, Europe/Moscow, UTC)';
+COMMENT ON COLUMN "oozo-schema".query_logs.created_at IS 'Дата создания записи в UTC';
 
 -- Индексы для таблицы query_logs
 CREATE INDEX IF NOT EXISTS idx_query_logs_user_login ON "oozo-schema".query_logs(user_login);

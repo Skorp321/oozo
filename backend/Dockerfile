@@ -1,40 +1,32 @@
-FROM python:3.11-slim  
-# nvidia/cuda:12.6.2-base-ubuntu22.04
+FROM python:3.11-slim AS builder
 
-# Установка системных зависимостей
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Создание пользователя без root прав
-RUN useradd --create-home --shell /bin/bash app
-
-# Установка рабочей директории
 WORKDIR /app
 
-# Копирование файлов зависимостей
 COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+RUN pip install docling --no-deps
 
-# Установка Python зависимостей
-RUN pip install --no-cache-dir -r requirements.txt
+FROM python:3.11-slim
 
-# Копирование кода приложения
-COPY . .
+RUN useradd --create-home --shell /bin/sh app
 
-# Создание необходимых директорий
-RUN mkdir -p data && chown -R app:app /app
+WORKDIR /app
 
-# Переключение на пользователя app
+COPY --from=builder /root/.local /home/app/.local
+COPY --chown=app:app . .
+
+RUN mkdir -p data && chown -R app:app /app /home/app/.local
 USER app
 
-# Открытие порта
+ENV PATH=/home/app/.local/bin:$PATH \
+    PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1
+
 EXPOSE 8000
 
-# Переменные окружения
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
-
-# Команда запуска
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"] 

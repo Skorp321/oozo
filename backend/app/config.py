@@ -12,7 +12,9 @@ class Settings(BaseSettings):
     temperature: float = Field(default=0.7, env="TEMPERATURE")
     
     # Embedding Model Configuration
-    embedding_model_name: str = Field(default="./models/multilingual-e5-large", env="EMBEDDING_MODEL_NAME")
+    embedding_model_name: str = Field(default="qwen3-0.6B-embedded", env="EMBEDDING_MODEL_NAME")
+    embedding_api_base: Optional[str] = Field(default=None, env="EMBEDDING_API_BASE")
+    embedding_api_key: Optional[str] = Field(default="dummy_key", env="EMBEDDING_API_KEY")
     
     # File Paths
     docs_path: str = Field(default="../docs", env="DOCS_PATH")

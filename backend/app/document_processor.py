@@ -50,7 +50,7 @@ def load_docx_files(docs_path: str) -> List[Dict[str, Any]]:
     for file_path in docs_dir.glob("*.docx"):
         try:
             logger.info(f"Загрузка документа: {file_path}")
-            text = extract_text_from_docx(str(file_path))
+            text = (str(file_path))
             if text.strip():
                 file_hash = calculate_file_hash(str(file_path))
                 documents.append({

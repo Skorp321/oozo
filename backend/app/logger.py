@@ -1,6 +1,6 @@
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from .schemas import QueryRequest, QueryResponse
@@ -34,7 +34,8 @@ class QALogger:
                 user_login: Optional[str] = None,
                 user_ip: Optional[str] = None,
                 final_prompt: Optional[str] = None,
-                chunk_ids: Optional[List[int]] = None) -> None:
+                chunk_ids: Optional[List[int]] = None,
+                user_timezone: Optional[str] = None) -> None:
         """
         Логирует вопрос и ответ в БД
         
@@ -47,6 +48,7 @@ class QALogger:
             user_ip: IP адрес пользователя
             final_prompt: Финальный промпт, отправленный в LLM
             chunk_ids: Список ID чанков, использованных для ответа
+            user_timezone: Временная зона пользователя (например, Europe/Moscow, UTC)
         """
         try:
             # Проверяем, что ответ не пустой (если нет ошибки)
@@ -65,7 +67,9 @@ class QALogger:
                         answer=response.answer,
                         processing_time=str(processing_time) if processing_time else None,
                         error_message=error,
-                        status="error" if error else "success"
+                        status="error" if error else "success",
+                        timezone=user_timezone,
+                        created_at=datetime.now(timezone.utc)
                     )
                     db.add(db_log)
                     db.flush()  # Получаем ID без коммита
@@ -110,7 +114,8 @@ class QALogger:
                      user_login: Optional[str] = None,
                      user_ip: Optional[str] = None,
                      final_prompt: Optional[str] = None,
-                     chunk_ids: Optional[List[int]] = None) -> None:
+                     chunk_ids: Optional[List[int]] = None,
+                     user_timezone: Optional[str] = None) -> None:
         """
         Логирует потоковый вопрос и ответ
         
@@ -125,6 +130,7 @@ class QALogger:
             user_ip: IP адрес пользователя
             final_prompt: Финальный промпт, отправленный в LLM
             chunk_ids: Список ID чанков, использованных для ответа
+            user_timezone: Временная зона пользователя (например, Europe/Moscow, UTC)
         """
         try:
             # Проверяем, что ответ не пустой (если нет ошибки)
@@ -142,7 +148,9 @@ class QALogger:
                         answer=answer,
                         processing_time=str(processing_time) if processing_time else None,
                         error_message=error,
-                        status="error" if error else "success"
+                        status="error" if error else "success",
+                        timezone=user_timezone,
+                        created_at=datetime.now(timezone.utc)
                     )
                     db.add(db_log)
                     db.flush()  # Получаем ID без коммита

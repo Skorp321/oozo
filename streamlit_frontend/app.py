@@ -1,4 +1,5 @@
 import streamlit as st
+import os
 
 import requests
 import json
@@ -16,8 +17,26 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Конфигурация API
-API_BASE_URL = st.secrets.get("API_BASE_URL", "http://localhost:8000")
+# Конфигурация API (приоритет: переменная окружения > secrets > дефолт)
+def get_api_base_url():
+    """Получение базового URL API с правильным приоритетом"""
+    # Сначала проверяем переменную окружения
+    env_url = os.environ.get("API_BASE_URL")
+    if env_url:
+        return env_url
+    
+    # Затем проверяем secrets
+    try:
+        secrets_url = st.secrets.get("API_BASE_URL")
+        if secrets_url:
+            return secrets_url
+    except:
+        pass
+    
+    # Дефолт для Docker окружения
+    return "http://rag-app:8000"
+
+API_BASE_URL = get_api_base_url()
 STREAM_QUERY_ENDPOINT = f"{API_BASE_URL}/api/query/stream"
 QUERY_ENDPOINT = f"{API_BASE_URL}/api/query"
 HEALTH_ENDPOINT = f"{API_BASE_URL}/health"
@@ -225,9 +244,19 @@ st.markdown("""
 def check_backend_health():
     """Проверка состояния бэкенда"""
     try:
-        response = requests.get(HEALTH_ENDPOINT, timeout=30)  # Увеличиваем до 30 секунд
+        # Используем актуальное значение API_BASE_URL
+        current_api_url = get_api_base_url()
+        health_url = f"{current_api_url}/health"
+        response = requests.get(health_url, timeout=5)
         return response.status_code == 200
-    except:
+    except requests.exceptions.ConnectionError as e:
+        # Логируем ошибку для отладки
+        import logging
+        logging.error(f"Не удалось подключиться к бэкенду по адресу {health_url}: {e}")
+        return False
+    except Exception as e:
+        import logging
+        logging.error(f"Ошибка при проверке бэкенда: {e}")
         return False
 
 def send_message_to_api(question, return_sources=True):

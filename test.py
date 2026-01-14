@@ -1,26 +1,52 @@
-from langchain_openai import ChatOpenAI
+import asyncio
+from openai import AsyncOpenAI
+
+client = AsyncOpenAI(api_key="dummy_key", base_url="https://565df812-6798-4e3d-9a62-18d67e029d53.modelrun.inference.cloud.ru/v1")
 
 
-repo_id = 'model-run-yjw0r-general'
+async def send_llm_request():
+    """Функция для отправки запроса к LLM в фоне"""
+    print("📤 Отправка запроса к LLM...")
+    try:
+        chat_response = await client.chat.completions.create(
+            model="model-run-vekow-trunk",
+            messages=[{"role": "user", "content": "What is the capital of France?"}],
+            max_tokens=100,
+        )
+        
+        print("\n📥 Ответ модели (получен в фоне):")
+        print("-" * 70)
+        print(chat_response.choices[0].message.content)
+        print("-" * 70)
+    except Exception as e:
+        print(f"❌ Ошибка при получении ответа от LLM: {e}")
 
-'''llm = ChatOpenAI(
-                    openai_api_key="dummy_key",
-                    openai_api_base="https://39d33ac4-dd56-435e-9f77-ad8ba6b87376.modelrun.inference.cloud.ru/v1",
-                    model=repo_id,
-                    temperature=0.1,
-                    streaming=True,
-                    timeout=600  # 10 minutes
-                )''' 
 
-llm = ChatOpenAI(
-    model="library/qwen3:8b",
-    openai_api_base="https://39d33ac4-dd56-435e-9f77-ad8ba6b87376.modelrun.inference.cloud.ru/v1",
-    openai_api_key="dummy_key",
-    temperature=0.1,
-    max_tokens=4000,
-    streaming=True,
-    verbose=True,
-)
+async def main():
+    # Получение списка моделей асинхронно
+    response = await client.models.list()
+    
+    # Способ 1: Получить все id моделей
+    print("Все ID моделей:")
+    for model in response.data:
+        print(f"  - {model.id}")
+    
+    # Запускаем запрос к LLM в фоне (не ждём ответа)
+    print("\n🚀 Запускаем запрос к LLM в фоновом режиме...")
+    task = asyncio.create_task(send_llm_request())
+    
+    # Код продолжает выполнение дальше, не ожидая ответа от LLM
+    print("✅ Запрос к LLM запущен, продолжаем выполнение...")
+    print("⏳ Выполняем другие операции...")
+    
+    # Имитация другой работы
+    await asyncio.sleep(0.1)
+    print("📝 Выполняем другую работу...")
+    
+    # Если нужно дождаться результата позже, можно использовать:
+    # result = await task
+    # Или просто оставить задачу выполняться в фоне
 
-response = llm.invoke("What is the capital of France?")
-print(response.content)
+
+if __name__ == "__main__":
+    asyncio.run(main())
