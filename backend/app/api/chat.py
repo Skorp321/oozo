@@ -1,3 +1,4 @@
+import os
 from fastapi import APIRouter, HTTPException, Query, Request, Header
 from fastapi.responses import StreamingResponse
 import json
@@ -7,6 +8,9 @@ from typing import List, Optional
 import logging
 import asyncio
 import time
+from datetime import date, datetime, time as dt_time, timedelta, timezone
+from dotenv import load_dotenv, find_dotenv
+from sqlalchemy import func, case, and_
 
 from ..schemas import (
     QueryRequest,
@@ -14,9 +18,20 @@ from ..schemas import (
     Source,
     LogsResponse,
     LogEntry,
+    FeedbackRequest,
+    FeedbackResponse,
+    AdminHrReportResponse,
+    AdminHrRow,
+    AdminHrHourlyStat,
+    AdminHrDailyStat,
 )
 from ..rag_system import rag_system
 from ..logger import qa_logger
+from ..models import ResponseFeedback, QueryLog, query_log_chunks
+from ..database import get_db_session
+
+
+load_dotenv(find_dotenv())
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -260,11 +275,11 @@ async def query_stream(request: QueryRequest, http_request: Request):
         )
 
         # Настройка LLM c потоковой отдачей (используем те же параметры, что и в системе)
-        repo_id = "model-run-vekow-trunk"
+        repo_id = os.getenv("OPENAI_MODEL_NAME")
         logger.info("[STREAM] initializing ChatOpenAI(streaming=True) ...")
         llm = ChatOpenAI(
-            openai_api_key="dummy_key",
-            openai_api_base="https://565df812-6798-4e3d-9a62-18d67e029d53.modelrun.inference.cloud.ru/v1",
+            openai_api_key=os.getenv("OPENAI_API_KEY"),
+            openai_api_base="https://foundation-models.api.cloud.ru/v1",
             model=repo_id,
             temperature=0.1,
             timeout=600,
@@ -320,6 +335,7 @@ async def query_stream(request: QueryRequest, http_request: Request):
             def produce_tokens():
                 nonlocal response_generated
                 nonlocal user_login, user_ip, final_prompt, chunk_ids
+                stream_error = None
                 try:
                     token_count = 0
                     for chunk in llm.stream([HumanMessage(content=final_prompt)]):
@@ -331,25 +347,23 @@ async def query_stream(request: QueryRequest, http_request: Request):
                             
                             loop.call_soon_threadsafe(queue.put_nowait, ("token", text))
                     logger.info("[STREAM] completed. total_chunks=%s", token_count)
-
-                    loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
                 except Exception as e:
-                    error_message = str(e)
-                    logger.error("[STREAM] error while streaming: %s", error_message)
-                    loop.call_soon_threadsafe(queue.put_nowait, ("error", error_message))
+                    stream_error = str(e)
+                    logger.error("[STREAM] error while streaming: %s", stream_error)
+                    loop.call_soon_threadsafe(queue.put_nowait, ("error", stream_error))
                 finally:
                     processing_time = time.time() - start_time
                     full_answer = "".join(answer_parts) if answer_parts else ""
-                    error_message = None
+                    query_log_id = None
                     # Логируем только если был сгенерирован ответ или произошла ошибка
-                    if response_generated or error_message:
-                        qa_logger.log_stream_qa(
+                    if response_generated or stream_error:
+                        query_log_id = qa_logger.log_stream_qa(
                             question=request.question,
                             answer=full_answer.split('</think>')[-1].strip(),
                             sources_count=sources_count,
                             sources_payload=sources_payload,
                             processing_time=processing_time,
-                            error=error_message,
+                            error=stream_error,
                             user_login=user_login,
                             user_ip=user_ip,
                             final_prompt=final_prompt,
@@ -357,7 +371,10 @@ async def query_stream(request: QueryRequest, http_request: Request):
                             user_timezone=user_timezone
                         )
                     answer_text = full_answer.split('</think>')[-1].strip()
-                    logger.info(f"[STREAM] Логирование завершено. Ответ: {len(answer_text)} символов, ошибка: {error_message}")
+                    logger.info(f"[STREAM] Логирование завершено. Ответ: {len(answer_text)} символов, query_log_id: {query_log_id}, ошибка: {stream_error}")
+                    if query_log_id is not None:
+                        loop.call_soon_threadsafe(queue.put_nowait, ("query_log_id", query_log_id))
+                    loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
 
             # Сначала отправляем sources синхронно, чтобы они были первыми
             if len(sources_payload) > 0:
@@ -367,8 +384,18 @@ async def query_stream(request: QueryRequest, http_request: Request):
             # Запускаем продюсера в пуле потоков
             _ = loop.run_in_executor(None, produce_tokens)
 
+            # Таймаут ожидания: если API не закрывает стрим, через N секунд без данных считаем поток завершённым
+            STREAM_IDLE_TIMEOUT = 90  # меньше, чем read timeout на фронте (120с)
             while True:
-                kind, payload = await queue.get()
+                try:
+                    kind, payload = await asyncio.wait_for(queue.get(), timeout=STREAM_IDLE_TIMEOUT)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[STREAM] Таймаут ожидания ответа от LLM (%.0f с). API не закрыл стрим. Отправляем [DONE] с частичным ответом.",
+                        STREAM_IDLE_TIMEOUT,
+                    )
+                    yield sse_format("[DONE]")
+                    break
                 if kind == "token":
                     yield sse_format({"token": payload})
                 elif kind == "sources":
@@ -378,6 +405,10 @@ async def query_stream(request: QueryRequest, http_request: Request):
                 elif kind == "error":
                     yield sse_format({"error": payload})
                     break
+                elif kind == "query_log_id":
+                    if payload is not None:
+                        yield sse_format({"query_log_id": payload})
+                    continue
                 elif kind == "done":
                     yield sse_format("[DONE]")
                     break
@@ -392,32 +423,6 @@ async def query_stream(request: QueryRequest, http_request: Request):
     except Exception as e:
         error_message = f"Внутренняя ошибка сервера: {str(e)}"
         raise HTTPException(status_code=500, detail=error_message)
-    finally:
-        # Логируем потоковый вопрос и ответ
-        try:
-            processing_time = time.time() - start_time
-            full_answer = "".join(answer_parts) if answer_parts else ""
-            
-            # Логируем только если был сгенерирован ответ или произошла ошибка
-            if response_generated or error_message:
-                qa_logger.log_stream_qa(
-                    question=request.question,
-                    answer=full_answer,
-                    sources_count=sources_count,
-                    sources_payload=None,
-                    processing_time=processing_time,
-                    error=error_message,
-                    user_login=user_login,
-                    user_ip=user_ip,
-                    final_prompt=final_prompt,
-                    chunk_ids=chunk_ids if chunk_ids else None,
-                    user_timezone=user_timezone
-                )
-                logger.info(f"[STREAM] Логирование завершено. Ответ: {len(full_answer)} символов, ошибка: {error_message}")
-            else:
-                logger.warning("[STREAM] Пропуск логирования - ответ не был сгенерирован")
-        except Exception as e:
-            logger.error(f"[STREAM] Ошибка при логировании: {e}")
 
 
 @router.get("/api/query/stream")
@@ -433,6 +438,226 @@ async def query_stream_get(http_request: Request, question: str = Query(..., des
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
+
+
+@router.post("/api/feedback", response_model=FeedbackResponse)
+async def save_feedback(body: FeedbackRequest):
+    """
+    Сохранение оценки ответа бота (like/dislike) в PostgreSQL. Связь с query_logs по query_log_id.
+    """
+    if body.feedback not in ("like", "dislike"):
+        raise HTTPException(status_code=400, detail="feedback должен быть 'like' или 'dislike'")
+    like_val = body.feedback == "like"
+    dislike_val = body.feedback == "dislike"
+    try:
+        with get_db_session() as db:
+            db.add(ResponseFeedback(
+                query_log_id=body.query_log_id,
+                like=like_val,
+                dislike=dislike_val,
+            ))
+        logger.info(f"Feedback сохранён в БД: query_log_id={body.query_log_id}, like={like_val}, dislike={dislike_val}")
+        return FeedbackResponse(ok=True, message="Оценка сохранена")
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении feedback в БД: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения в БД: {str(e)}")
+
+
+@router.get("/api/admin/hr-report", response_model=AdminHrReportResponse)
+async def get_admin_hr_report(
+    start_date: date = Query(..., description="Дата начала (YYYY-MM-DD)"),
+    end_date: date = Query(..., description="Дата окончания (YYYY-MM-DD)"),
+    score_type: str = Query("all", description="all | like | dislike"),
+    context_found_only: bool = Query(True, description="Только записи с найденным контекстом"),
+    limit: int = Query(10, ge=1, le=500, description="Максимальное количество строк в таблице"),
+):
+    """
+    Отчет для admin-hr страницы: метрики, табличные данные и статистика по часам.
+    """
+    allowed_score_types = {"all", "like", "dislike"}
+    if score_type not in allowed_score_types:
+        raise HTTPException(status_code=400, detail="score_type должен быть one of: all, like, dislike")
+    if end_date < start_date:
+        raise HTTPException(status_code=400, detail="end_date не может быть меньше start_date")
+
+    start_dt = datetime.combine(start_date, dt_time.min).replace(tzinfo=timezone.utc)
+    end_dt = datetime.combine(end_date + timedelta(days=1), dt_time.min).replace(tzinfo=timezone.utc)
+
+    try:
+        with get_db_session() as db:
+            feedback_subq = (
+                db.query(
+                    ResponseFeedback.query_log_id.label("query_log_id"),
+                    func.bool_or(ResponseFeedback.like).label("has_like"),
+                    func.bool_or(ResponseFeedback.dislike).label("has_dislike"),
+                )
+                .group_by(ResponseFeedback.query_log_id)
+                .subquery()
+            )
+
+            context_subq = (
+                db.query(
+                    query_log_chunks.c.query_log_id.label("query_log_id"),
+                    func.count(query_log_chunks.c.chunk_id).label("chunk_count"),
+                )
+                .group_by(query_log_chunks.c.query_log_id)
+                .subquery()
+            )
+
+            operation_expr = case(
+                (
+                    and_(
+                        func.coalesce(feedback_subq.c.has_dislike, False).is_(True),
+                        func.coalesce(feedback_subq.c.has_like, False).is_(False),
+                    ),
+                    "Dislike",
+                ),
+                (func.coalesce(feedback_subq.c.has_like, False).is_(True), "Like"),
+                else_="Без оценки",
+            )
+            context_bool_expr = func.coalesce(context_subq.c.chunk_count, 0) > 0
+
+            base_query = (
+                db.query(
+                    QueryLog.id.label("id"),
+                    QueryLog.created_at.label("created_at"),
+                    QueryLog.status.label("status"),
+                    QueryLog.user_login.label("user_login"),
+                    QueryLog.user_ip.label("user_ip"),
+                    QueryLog.question.label("question"),
+                    QueryLog.answer.label("answer"),
+                    operation_expr.label("operation"),
+                    context_bool_expr.label("context_found"),
+                )
+                .outerjoin(feedback_subq, feedback_subq.c.query_log_id == QueryLog.id)
+                .outerjoin(context_subq, context_subq.c.query_log_id == QueryLog.id)
+                .filter(
+                    QueryLog.created_at >= start_dt,
+                    QueryLog.created_at < end_dt,
+                )
+            )
+
+            if score_type == "like":
+                base_query = base_query.filter(func.coalesce(feedback_subq.c.has_like, False).is_(True))
+            elif score_type == "dislike":
+                base_query = base_query.filter(func.coalesce(feedback_subq.c.has_dislike, False).is_(True))
+
+            if context_found_only:
+                base_query = base_query.filter(context_bool_expr.is_(True))
+
+            dataset_rows = base_query.order_by(QueryLog.created_at.asc()).all()
+
+            total_records = len(dataset_rows)
+            like_count = sum(1 for r in dataset_rows if r.operation == "Like")
+            dislike_count = sum(1 for r in dataset_rows if r.operation == "Dislike")
+            context_found_count = sum(1 for r in dataset_rows if r.context_found)
+
+            def actor_key(row) -> Optional[str]:
+                login = (row.user_login or "").strip() if hasattr(row, "user_login") else ""
+                if login:
+                    return f"login:{login}"
+                ip = (row.user_ip or "").strip() if hasattr(row, "user_ip") else ""
+                if ip:
+                    return f"ip:{ip}"
+                return None
+
+            # DAO/MAO считаются по всем пользователям сервиса (без учета текущих фильтров отчета)
+            day_start = datetime.combine(end_date, dt_time.min).replace(tzinfo=timezone.utc)
+            day_end = datetime.combine(end_date + timedelta(days=1), dt_time.min).replace(tzinfo=timezone.utc)
+
+            dao_rows = (
+                db.query(
+                    QueryLog.user_login.label("user_login"),
+                    QueryLog.user_ip.label("user_ip"),
+                )
+                .filter(
+                    QueryLog.created_at >= day_start,
+                    QueryLog.created_at < day_end,
+                )
+                .all()
+            )
+            dao_actors = {k for k in (actor_key(r) for r in dao_rows) if k}
+            dao = len(dao_actors)
+
+            month_start = datetime(end_date.year, end_date.month, 1, tzinfo=timezone.utc)
+            if end_date.month == 12:
+                month_end = datetime(end_date.year + 1, 1, 1, tzinfo=timezone.utc)
+            else:
+                month_end = datetime(end_date.year, end_date.month + 1, 1, tzinfo=timezone.utc)
+
+            month_query = (
+                db.query(
+                    QueryLog.user_login.label("user_login"),
+                    QueryLog.user_ip.label("user_ip"),
+                )
+                .filter(
+                    QueryLog.created_at >= month_start,
+                    QueryLog.created_at < month_end,
+                )
+            )
+            month_rows = month_query.all()
+            mao_actors = {k for k in (actor_key(r) for r in month_rows) if k}
+            mao = len(mao_actors)
+
+            table_rows = []
+            for row in dataset_rows[:limit]:
+                created_at = row.created_at
+                if created_at is None:
+                    continue
+                table_rows.append(
+                    AdminHrRow(
+                        id=row.id,
+                        data=1000 + row.id,
+                        date=created_at,
+                        operation=row.operation,
+                        content="Найден" if row.context_found else "Не найден",
+                        status="Успешно" if row.status == "success" else "Ошибка",
+                        hour=created_at.hour,
+                        question=row.question,
+                        answer=row.answer,
+                    )
+                )
+
+            hour_buckets = [0] * 24
+            for row in dataset_rows:
+                created_at = row.created_at
+                if created_at is not None:
+                    hour_buckets[created_at.hour] += 1
+            hourly_stats = [
+                AdminHrHourlyStat(hour=hour, count=count)
+                for hour, count in enumerate(hour_buckets)
+                if count > 0
+            ]
+
+            day_buckets = {}
+            for row in dataset_rows:
+                created_at = row.created_at
+                if created_at is None:
+                    continue
+                day_key = created_at.date().isoformat()
+                day_buckets[day_key] = day_buckets.get(day_key, 0) + 1
+
+            daily_stats = [
+                AdminHrDailyStat(day=day, count=day_buckets[day])
+                for day in sorted(day_buckets.keys())
+            ]
+
+            return AdminHrReportResponse(
+                total_records=total_records,
+                like_count=like_count,
+                dislike_count=dislike_count,
+                context_found=context_found_count,
+                dao=dao,
+                mao=mao,
+                rows=table_rows,
+                hourly_stats=hourly_stats,
+                daily_stats=daily_stats,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка получения admin hr report: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка формирования отчета: {str(e)}")
 
 
 @router.get("/api/logs", response_model=LogsResponse)

@@ -20,7 +20,8 @@ WORKDIR /app
 COPY --from=builder /root/.local /home/app/.local
 COPY --chown=app:app . .
 
-RUN mkdir -p data && chown -R app:app /app /home/app/.local
+RUN mkdir -p data && chown -R app:app /app /home/app/.local && \
+    chmod +x /app/entrypoint.sh
 USER app
 
 ENV PATH=/home/app/.local/bin:$PATH \
@@ -29,4 +30,5 @@ ENV PATH=/home/app/.local/bin:$PATH \
 
 EXPOSE 8000
 
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"] 

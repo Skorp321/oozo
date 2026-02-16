@@ -9,6 +9,18 @@ class QueryRequest(BaseModel):
     return_sources: bool = True
 
 
+class FeedbackRequest(BaseModel):
+    """Запрос на сохранение оценки ответа (like/dislike)."""
+    query_log_id: int
+    feedback: str  # "like" | "dislike"
+
+
+class FeedbackResponse(BaseModel):
+    """Ответ после сохранения оценки."""
+    ok: bool
+    message: str
+
+
 class Source(BaseModel):
     title: str
     content: str
@@ -96,3 +108,37 @@ class TaskStatusResponse(BaseModel):
     completed_at: Optional[datetime] = None
     result: Optional[QueryResponse] = None
     error: Optional[str] = None
+
+
+class AdminHrRow(BaseModel):
+    id: int
+    data: int
+    date: datetime
+    operation: str
+    content: str
+    status: str
+    hour: int
+    question: str
+    answer: Optional[str] = None
+
+
+class AdminHrHourlyStat(BaseModel):
+    hour: int
+    count: int
+
+
+class AdminHrDailyStat(BaseModel):
+    day: str
+    count: int
+
+
+class AdminHrReportResponse(BaseModel):
+    total_records: int
+    like_count: int
+    dislike_count: int
+    context_found: int
+    dao: int
+    mao: int
+    rows: List[AdminHrRow]
+    hourly_stats: List[AdminHrHourlyStat]
+    daily_stats: List[AdminHrDailyStat]

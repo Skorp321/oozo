@@ -14,20 +14,32 @@
 
 ### Ручное применение
 
-#### Вариант 1: Через Python скрипт
+#### Вариант 1: Скрипт из корня проекта (рекомендуется)
+
+```bash
+# Локально (подключение к БД по настройкам из .env)
+./apply_migrations.sh
+# или явно
+./apply_migrations.sh local
+
+# Через Docker (контейнер rag-app подключается к postgres)
+./apply_migrations.sh docker
+```
+
+#### Вариант 2: Через Python скрипт
 
 ```bash
 cd backend
 python scripts/apply_migrations.py
 ```
 
-#### Вариант 2: Через Docker Compose
+#### Вариант 3: Через Docker Compose
 
 ```bash
 docker compose exec rag-app python scripts/apply_migrations.py
 ```
 
-#### Вариант 3: Прямое применение SQL
+#### Вариант 4: Прямое применение SQL
 
 ```bash
 # Подключение к PostgreSQL контейнеру

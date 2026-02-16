@@ -12,9 +12,9 @@ class Settings(BaseSettings):
     temperature: float = Field(default=0.7, env="TEMPERATURE")
     
     # Embedding Model Configuration
-    embedding_model_name: str = Field(default="qwen3-0.6B-embedded", env="EMBEDDING_MODEL_NAME")
-    embedding_api_base: Optional[str] = Field(default=None, env="EMBEDDING_API_BASE")
-    embedding_api_key: Optional[str] = Field(default="dummy_key", env="EMBEDDING_API_KEY")
+    embedding_model_name: str = Field(default="Qwen3-Embedding-0.6B", env="EMBEDDING_MODEL_NAME")
+    embedding_api_base: Optional[str] = Field(default="https://foundation-models.api.cloud.ru/v1", env="EMBEDDING_API_BASE")
+    embedding_api_key: Optional[str] = Field(default="dummy_key", env="OPENAI_API_KEY")
     
     # File Paths
     docs_path: str = Field(default="../docs", env="DOCS_PATH")
@@ -44,7 +44,16 @@ class Settings(BaseSettings):
     @property
     def database_url(self) -> str:
         """Формирует URL подключения к PostgreSQL"""
-        return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        host = self.postgres_host
+
+        # Локальный запуск backend: хост "postgres" из docker-compose не резолвится с хоста
+        # Тогда принудительно переключаемся на localhost.
+        if host == "postgres":
+            running_in_docker = os.path.exists("/.dockerenv")
+            if not running_in_docker:
+                host = "localhost"
+
+        return f"postgresql://{self.postgres_user}:{self.postgres_password}@{host}:{self.postgres_port}/{self.postgres_db}"
     
     class Config:
         env_file = ".env"

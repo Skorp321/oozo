@@ -54,6 +54,17 @@ CREATE TABLE IF NOT EXISTS "oozo-schema".query_logs (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC') NOT NULL
 );
 
+-- Добавить колонку timezone, если таблица уже существовала без неё (старая версия миграции)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'oozo-schema' AND table_name = 'query_logs' AND column_name = 'timezone'
+    ) THEN
+        ALTER TABLE "oozo-schema".query_logs ADD COLUMN timezone VARCHAR(50);
+    END IF;
+END $$;
+
 -- Комментарии к таблице query_logs
 COMMENT ON TABLE "oozo-schema".query_logs IS 'Таблица для логирования запросов пользователей';
 COMMENT ON COLUMN "oozo-schema".query_logs.id IS 'ID записи';
@@ -95,4 +106,25 @@ COMMENT ON COLUMN "oozo-schema".query_log_chunks.chunk_id IS 'ID чанка из
 -- Индексы для промежуточной таблицы
 CREATE INDEX IF NOT EXISTS idx_query_log_chunks_query_log_id ON "oozo-schema".query_log_chunks(query_log_id);
 CREATE INDEX IF NOT EXISTS idx_query_log_chunks_chunk_id ON "oozo-schema".query_log_chunks(chunk_id);
+
+-- Таблица для логирования оценок (like/dislike) ответов бота, связана с query_logs
+CREATE TABLE IF NOT EXISTS "oozo-schema".response_feedback (
+    id SERIAL PRIMARY KEY,
+    query_log_id INTEGER NOT NULL,
+    "like" BOOLEAN NOT NULL DEFAULT FALSE,
+    dislike BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC') NOT NULL,
+    CONSTRAINT fk_response_feedback_query_log_id
+        FOREIGN KEY (query_log_id)
+        REFERENCES "oozo-schema".query_logs(id)
+        ON DELETE CASCADE
+);
+COMMENT ON TABLE "oozo-schema".response_feedback IS 'Оценки пользователей (like/dislike) ответов бота из Streamlit';
+COMMENT ON COLUMN "oozo-schema".response_feedback.id IS 'ID записи';
+COMMENT ON COLUMN "oozo-schema".response_feedback.query_log_id IS 'ID ответа из таблицы query_logs';
+COMMENT ON COLUMN "oozo-schema".response_feedback."like" IS 'Понравилось';
+COMMENT ON COLUMN "oozo-schema".response_feedback.dislike IS 'Не понравилось';
+COMMENT ON COLUMN "oozo-schema".response_feedback.created_at IS 'Дата создания в UTC';
+CREATE INDEX IF NOT EXISTS idx_response_feedback_query_log_id ON "oozo-schema".response_feedback(query_log_id);
+CREATE INDEX IF NOT EXISTS idx_response_feedback_created_at ON "oozo-schema".response_feedback(created_at);
 

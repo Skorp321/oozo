@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import logging
 
 import requests
 import json
@@ -8,6 +9,8 @@ from datetime import datetime
 import markdown
 from streamlit.components.v1 import html
 import re
+
+_logger = logging.getLogger(__name__)
 
 # Конфигурация страницы
 st.set_page_config(
@@ -42,6 +45,7 @@ QUERY_ENDPOINT = f"{API_BASE_URL}/api/query"
 HEALTH_ENDPOINT = f"{API_BASE_URL}/health"
 STATS_ENDPOINT = f"{API_BASE_URL}/api/stats"
 INFO_ENDPOINT = f"{API_BASE_URL}/api/info"
+FEEDBACK_ENDPOINT = f"{API_BASE_URL}/api/feedback"
 
 # CSS стили
 st.markdown("""
@@ -93,6 +97,12 @@ st.markdown("""
     .message-avatar {
         font-size: 1.2rem;
         margin-right: 0.5rem;
+    }
+
+    .message-time {
+        margin-top: 0.5rem;
+        font-size: 0.85rem;
+        color: #666;
     }
     
     .sources-section {
@@ -238,6 +248,13 @@ st.markdown("""
         background-color: #f8f9fa;
         font-weight: bold;
     }
+    
+    .feedback-caption {
+        font-size: 0.9rem;
+        color: #666;
+        margin-top: 0.25rem;
+        margin-bottom: 0.5rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -262,19 +279,21 @@ def check_backend_health():
 def send_message_to_api(question, return_sources=True):
     """Потоковая отправка в API (SSE). Возвращает объект Response для чтения потока."""
     try:
+        # timeout=(connect, read): при стриме read — макс. время между приходами данных
         response = requests.post(
             STREAM_QUERY_ENDPOINT,
             stream=True,
             json={
                 "question": question,
-                # Источники не приходят через поток
                 "return_sources": False
             },
             headers={"Accept": "text/event-stream"},
-            timeout=600
+            timeout=(10, 120)
         )
         response.raise_for_status()
         return response
+    except requests.exceptions.Timeout as e:
+        raise Exception("Превышено время ожидания ответа от сервера. Попробуйте ещё раз или сократите вопрос.")
     except requests.exceptions.RequestException as e:
         raise Exception(f"Ошибка API: {str(e)}")
 
@@ -285,6 +304,25 @@ def render_markdown(text):
         extensions=['fenced_code', 'tables', 'nl2br', 'codehilite']
     )
     return f'<div class="markdown-content">{html_content}</div>'
+
+def save_feedback_to_db(query_log_id: int, feedback: str) -> bool:
+    """
+    Отправляет оценку (like/dislike) по ID ответа из query_logs в бэкенд для сохранения в PostgreSQL.
+    Возвращает True при успехе, False при ошибке.
+    """
+    try:
+        resp = requests.post(
+            FEEDBACK_ENDPOINT,
+            json={"query_log_id": query_log_id, "feedback": feedback},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        _logger.info("Feedback сохранён в БД: query_log_id=%s, %s", query_log_id, feedback)
+        return True
+    except requests.RequestException as e:
+        _logger.warning("Не удалось сохранить feedback в БД: %s", e)
+        return False
+
 
 def display_message(sender, text, timestamp, sources=None, is_error=False, is_thinking=False):
     """Отображение сообщения в чате"""
@@ -300,14 +338,16 @@ def display_message(sender, text, timestamp, sources=None, is_error=False, is_th
     else:
         avatar = "🤖"
         message_class = "bot-message"
+
+    time_label = "Время получения ответа" if sender == "bot" and not is_thinking else "Время сообщения"
     
     st.markdown(f"""
     <div class="chat-message {message_class}">
         <div class="message-header">
             <span class="message-avatar">{avatar}</span>
-            <span>{timestamp}</span>
         </div>
         {render_markdown(text)}
+        <div class="message-time">{time_label}: {timestamp}</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -361,7 +401,7 @@ def main():
         """, unsafe_allow_html=True)
     
     # Отображение истории сообщений
-    for message in st.session_state.messages:
+    for idx, message in enumerate(st.session_state.messages):
         display_message(
             sender=message["sender"],
             text=message["text"],
@@ -370,6 +410,38 @@ def main():
             is_error=message.get("is_error", False),
             is_thinking=message.get("is_thinking", False)
         )
+        # Кнопки like/dislike под каждым ответом бота (кроме ошибок и служебного "думает")
+        if (
+            message["sender"] == "bot"
+            and not message.get("is_error")
+            and not message.get("is_thinking")
+        ):
+            feedback = message.get("feedback")
+            if feedback:
+                if feedback == "like":
+                    st.markdown('<p class="feedback-caption">👍 Вам понравилось это сообщение</p>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<p class="feedback-caption">👎 Вам не понравилось это сообщение</p>', unsafe_allow_html=True)
+            else:
+                query_log_id = message.get("query_log_id")
+                if query_log_id is None:
+                    st.markdown('<p class="feedback-caption">Оценка недоступна: ответ не сохранен в БД.</p>', unsafe_allow_html=True)
+                else:
+                    col_like, col_dislike, _ = st.columns([1, 1, 4])
+                    with col_like:
+                        if st.button("👍 Like", key=f"like_{idx}", use_container_width=True):
+                            if save_feedback_to_db(query_log_id, "like"):
+                                message["feedback"] = "like"
+                                st.rerun()
+                            else:
+                                st.error("Не удалось сохранить оценку в БД.")
+                    with col_dislike:
+                        if st.button("👎 Dislike", key=f"dislike_{idx}", use_container_width=True):
+                            if save_feedback_to_db(query_log_id, "dislike"):
+                                message["feedback"] = "dislike"
+                                st.rerun()
+                            else:
+                                st.error("Не удалось сохранить оценку в БД.")
     
     # Индикатор загрузки
     if st.session_state.get("is_loading", False):
@@ -452,12 +524,12 @@ def main():
             user_message = next((msg for msg in reversed(st.session_state.messages) if msg["sender"] == "user"), None)
             
             if user_message:
+                generated_text = ""
+                sources_collected = None
+                query_log_id = None
                 resp = send_message_to_api(user_message["text"])  # потоковый Response
                 if resp.status_code == 200:
                     word_container = st.empty()
-                    generated_text = ""
-                    sources_collected = None
-                    
                     for raw_line in resp.iter_lines(decode_unicode=True):
                         if not raw_line:
                             continue
@@ -474,6 +546,10 @@ def main():
                             continue
                         if isinstance(data, dict) and data.get("error"):
                             raise Exception(data["error"])
+                        # ID ответа из query_logs для связи с оценками (like/dislike)
+                        if isinstance(data, dict) and "query_log_id" in data:
+                            query_log_id = data["query_log_id"]
+                            continue
                         # Получение источников (чанков) из SSE
                         if isinstance(data, dict) and data.get("sources") is not None:
                             try:
@@ -495,25 +571,69 @@ def main():
                             "text": generated_text.split('</think>')[-1],
                             "timestamp": datetime.now().strftime("%H:%M:%S"),
                         }
+                        if query_log_id is not None:
+                            bot_message["query_log_id"] = query_log_id
                         if sources_collected:
                             bot_message["sources"] = sources_collected
                             st.success(f"Добавлены источники: {len(sources_collected)} чанков")
                         else:
                             st.warning("Источники не получены")
                         st.session_state.messages.append(bot_message)
+                    else:
+                        # Стрим завершился без текста (нет [DONE] или пустой ответ)
+                        st.session_state.messages.append({
+                            "sender": "bot",
+                            "text": "Ответ не был получен. Проверьте, что бэкенд и индекс документов доступны, и попробуйте ещё раз.",
+                            "timestamp": datetime.now().strftime("%H:%M:%S"),
+                            "is_error": True,
+                        })
                 
+        except requests.exceptions.Timeout as e:
+            # При таймауте используем частичный ответ, если он есть
+            final_text = (generated_text or "").split('</think>')[-1].strip() if user_message else ""
+            if len(final_text) > 50:
+                bot_message = {
+                    "sender": "bot",
+                    "text": final_text + "\n\n_*(Ответ обрезан из-за таймаута. Попробуйте повторить запрос.)*_",
+                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                }
+                if query_log_id is not None:
+                    bot_message["query_log_id"] = query_log_id
+                if sources_collected:
+                    bot_message["sources"] = sources_collected
+                st.session_state.messages.append(bot_message)
+            else:
+                st.session_state.messages.append({
+                    "sender": "bot",
+                    "text": "Превышено время ожидания ответа. Попробуйте ещё раз или сократите вопрос.",
+                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                    "is_error": True,
+                })
         except Exception as e:
-            # Удаление сообщения "думает"
-            st.session_state.messages.pop()
-            
-            # Добавление сообщения об ошибке
-            error_message = {
-                "sender": "bot",
-                "text": f"Извините, произошла ошибка при обработке вашего запроса: {str(e)}",
-                "timestamp": datetime.now().strftime("%H:%M:%S"),
-                "is_error": True
-            }
-            st.session_state.messages.append(error_message)
+            # Удаление сообщения "думает" (оно могло остаться при ошибке до pop)
+            if st.session_state.messages and st.session_state.messages[-1].get("is_thinking"):
+                st.session_state.messages.pop()
+            # При другой ошибке — показываем частичный ответ, если есть
+            final_text = (generated_text or "").split('</think>')[-1].strip() if user_message else ""
+            if len(final_text) > 50:
+                bot_message = {
+                    "sender": "bot",
+                    "text": final_text + "\n\n_*(Ответ может быть неполным из-за ошибки.)*_",
+                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                }
+                if query_log_id is not None:
+                    bot_message["query_log_id"] = query_log_id
+                if sources_collected:
+                    bot_message["sources"] = sources_collected
+                st.session_state.messages.append(bot_message)
+            else:
+                error_message = {
+                    "sender": "bot",
+                    "text": f"Извините, произошла ошибка при обработке вашего запроса: {str(e)}",
+                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                    "is_error": True
+                }
+                st.session_state.messages.append(error_message)
         
         finally:
             # Сброс состояния загрузки

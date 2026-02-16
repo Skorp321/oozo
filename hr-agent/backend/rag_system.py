@@ -1,46 +1,40 @@
 import os
 import logging
 import pickle
-from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import numpy as np
 from datetime import datetime
 
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableParallel
 
 from .config import settings
 from .document_processor import load_docx_files, split_documents, get_document_stats
-from .database import get_db_session
-from .models import Chunk
-
-
-load_dotenv()
 
 logger = logging.getLogger(__name__)
+
 
 def format_documents(documents: list[Document]):
     return "\n\n".join(doc.page_content for doc in documents)
 
+
 def format_answer(response: str):
     return response.content.split('</think>')[-1].strip()
-        
-        
+
+
 class RAGSystem:
     def __init__(self):
         self.embeddings = None
         self.vector_store = None
-        self.retriever = None
         self.llm = None
         self.documents = []
         self.stats = {}
+        self.retriever = None
         self._initialized = False
     
     def initialize(self):
@@ -83,7 +77,7 @@ class RAGSystem:
             if is_cloud_model:
                 # Используем облачный эмбеддер через vllm
                 api_base = settings.embedding_api_base or "http://localhost:8000/v1"
-                api_key = os.getenv("OPENAI_API_KEY") or settings.embedding_api_key or settings.openai_api_key or "dummy_key"
+                api_key = settings.embedding_api_key or settings.openai_api_key or "dummy_key"
                 
                 logger.info(
                     "Используем облачный эмбеддер %s через vllm по адресу %s",
@@ -309,28 +303,28 @@ class RAGSystem:
         Настройка QA цепочки
         """
         # Создание языковой модели
-        repo_id = "zai-org/GLM-4.7"
+        repo_id = settings.openai_model_name or "model-run-vekow-trunk"
+        api_base = settings.openai_api_base or "https://10f9698e-46b7-4a33-be37-f6495989f01f.modelrun.inference.cloud.ru/v1"
 
         self.llm = ChatOpenAI(
-                    openai_api_key=os.getenv("OPENAI_API_KEY"),
-                    openai_api_base="https://foundation-models.api.cloud.ru/v1",
-                    model=repo_id,
-                    temperature=0.1,
-                    streaming=True,
-                    timeout=600  # 10 minutes
-                )      
+            openai_api_key=settings.openai_api_key,
+            openai_api_base=api_base,
+            model=repo_id,
+            temperature=settings.temperature,
+            streaming=False,  # Для MCP не нужен streaming
+            timeout=600
+        )
 
     def retrieve_documents(self, question: str, k: int = 5):
         """
-        Получение релевантных документов с использованием текущего эмбеддера.
-        При любой ошибке (в т.ч. NoneType при неинициализированном retriever/embeddings) возвращает [].
+        Получение релевантных документов с использованием текущего эмбеддера
         """
         if not self._initialized or not self.vector_store:
             return []
-        retriever = getattr(self, "retriever", None)
+        
         try:
-            if retriever is not None:
-                return retriever.invoke(question)
+            if self.retriever is not None:
+                return self.retriever.invoke(question)
             return self.vector_store.similarity_search(question, k=k)
         except Exception as exc:
             logger.error(f"Ошибка при получении документов: {exc}")
@@ -342,7 +336,7 @@ class RAGSystem:
         """
         
         # Создание промпта
-        template = """Ты - помощник по юридическим вопросам. Используй следующие части контекста из юридических документов, чтобы дать точный и полезный ответ на вопрос пользователя.
+        template = """Ты - помощник по HR вопросам. Используй следующие части контекста из документов, чтобы дать точный и полезный ответ на вопрос пользователя.
 
         Важные правила:
         1. Отвечай только на основе предоставленного контекста
@@ -382,36 +376,18 @@ class RAGSystem:
             
             result = format_answer(result)
 
-            # Обработка результата от RetrievalQA
+            # Обработка результата
             answer = result if result else "Не удалось получить ответ"
 
-            # Используем те же чанки для извлечения ID
+            # Используем те же чанки для источников
             source_documents = chunks if isinstance(chunks, list) else self.vector_store.similarity_search(question, k=5)
             logger.info(f"Тип чанков {type(source_documents)}")
             logger.info(f"Найденные чанки: {len(source_documents) if isinstance(source_documents, list) else 'N/A'}")
             
-            # Извлекаем ID чанков из метаданных
-            chunk_ids = []
-            if isinstance(source_documents, list):
-                for doc in source_documents:
-                    if hasattr(doc, 'metadata') and doc.metadata:
-                        db_id = doc.metadata.get("db_id")
-                        if db_id:
-                            chunk_ids.append(db_id)
-            
             # Формирование источников
             sources = []
             if return_sources and source_documents:
-                # В новом API контекст может быть строкой или списком документов
-                if isinstance(source_documents, str):
-                    # Если контекст - это строка, создаем один источник
-                    sources.append({
-                        "title": "Контекст",
-                        "content": source_documents,
-                        "score": 1.0,
-                        "metadata": {}
-                    })
-                elif isinstance(source_documents, list):
+                if isinstance(source_documents, list):
                     for doc in source_documents:
                         if hasattr(doc, 'metadata') and hasattr(doc, 'page_content'):
                             sources.append({
@@ -421,32 +397,21 @@ class RAGSystem:
                                 "metadata": doc.metadata
                             })
             
-            logger.info(f"Запрос обработан, найдено источников: {len(sources)}, chunk_ids: {chunk_ids}")
+            logger.info(f"Запрос обработан, найдено источников: {len(sources)}")
             
             return {
                 "answer": answer,
                 "sources": sources,
-                "final_prompt": final_prompt,
-                "chunk_ids": chunk_ids
+                "final_prompt": final_prompt
             }
             
         except Exception as e:
             logger.error(f"Ошибка при обработке запроса: {e}")
-            # Получаем chunk_ids даже при ошибке, если чанки были найдены
-            chunk_ids = []
-            try:
-                if self.vector_store:
-                    error_docs = self.vector_store.similarity_search(question, k=5)
-                    if error_docs:
-                        chunk_ids = self._get_chunk_ids_from_documents(error_docs)
-            except Exception as e2:
-                logger.warning(f"Не удалось получить chunk_ids при ошибке: {e2}")
             
             return {
                 "answer": f"Произошла ошибка при обработке запроса: {str(e)}",
                 "sources": [],
-                "final_prompt": None,
-                "chunk_ids": chunk_ids
+                "final_prompt": None
             }
     
     def similarity_search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
@@ -474,50 +439,6 @@ class RAGSystem:
             logger.error(f"Ошибка при поиске похожих документов: {e}")
             return []
     
-    def reindex_documents(self) -> Dict[str, Any]:
-        """
-        Переиндексация документов
-        """
-        try:
-            logger.info("Начало переиндексации документов...")
-            
-            # Загрузка документов
-            self.documents = load_docx_files(settings.docs_path)
-            
-            if not self.documents:
-                return {
-                    "message": "Документы не найдены",
-                    "documents_processed": 0,
-                    "chunks_created": 0,
-                    "index_size_mb": 0
-                }
-
-            chunks = split_documents(self.documents)
-            self.vector_store = FAISS.from_documents(chunks, self.embeddings)
-            self._save_vector_store()
-            self._update_stats(chunks)
-            
-            # Пересоздание гибридного ретривера
-            if chunks:
-                bm25 = BM25Retriever.from_documents(chunks)
-                self.retriever = EnsembleRetriever(
-                    retrievers=[bm25, self.vector_store.as_retriever(search_kwargs={"k": 5})],
-                    weights=[0.5, 0.5]
-                )
-            
-            logger.info("Переиндексация завершена")
-            
-            return {
-                "message": "Документы успешно переиндексированы",
-                "documents_processed": len(self.documents),
-                "chunks_created": len(chunks),
-                "index_size_mb": self.stats["index_size_mb"]
-            }
-            
-        except Exception as e:
-            logger.error(f"Ошибка при переиндексации: {e}")
-            raise
-    
     def get_stats(self) -> Dict[str, Any]:
         """
         Получение статистики системы
@@ -526,4 +447,4 @@ class RAGSystem:
 
 
 # Глобальный экземпляр RAG системы
-rag_system = RAGSystem() 
+rag_system = RAGSystem()

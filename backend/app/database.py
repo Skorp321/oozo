@@ -40,18 +40,16 @@ def get_migration_files():
         logger.warning(f"Директория миграций не найдена: {MIGRATIONS_DIR}")
         return []
     
-    # Ищем либо init_schema.sql, либо файлы миграций с нумерацией
+    # init_schema.sql первым, затем остальные миграции по имени
     migration_files = []
     init_schema_file = MIGRATIONS_DIR / "init_schema.sql"
     if init_schema_file.exists():
         migration_files.append(init_schema_file)
-    else:
-        # Fallback к старой системе нумерации
-        migration_files = sorted([
-            f for f in MIGRATIONS_DIR.glob("*.sql")
-            if f.name.startswith("0") and f.name != "000_check_tables.sql"
-        ])
-    
+    other_sql = sorted([
+        f for f in MIGRATIONS_DIR.glob("*.sql")
+        if f.name != "init_schema.sql"
+    ])
+    migration_files.extend(other_sql)
     return migration_files
 
 
