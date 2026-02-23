@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from enum import Enum
-from datetime import datetime
+from datetime import date, datetime
 
 
 class QueryRequest(BaseModel):
@@ -132,6 +132,16 @@ class AdminHrDailyStat(BaseModel):
     count: int
 
 
+class AdminHrMetricPoint(BaseModel):
+    date: date
+    dau: Optional[int] = None
+    mau: Optional[int] = None
+    retention_rate: Optional[float] = None
+    retention_week: Optional[float] = None
+    retention_month: Optional[float] = None
+    retention_quarter: Optional[float] = None
+
+
 class AdminHrReportResponse(BaseModel):
     total_records: int
     like_count: int
@@ -142,3 +152,4 @@ class AdminHrReportResponse(BaseModel):
     rows: List[AdminHrRow]
     hourly_stats: List[AdminHrHourlyStat]
     daily_stats: List[AdminHrDailyStat]
+    metrics_history: List[AdminHrMetricPoint]

@@ -9,6 +9,7 @@ from app.config import settings
 from app.rag_system import rag_system
 from app.api import chat, system
 from app.database import init_db
+from app.metrics_scheduler import run_metrics_scheduler
 
 # Настройка логирования
 logging.basicConfig(
@@ -23,6 +24,8 @@ async def lifespan(app: FastAPI):
     """
     Управление жизненным циклом приложения
     """
+    metrics_scheduler_task = None
+
     # Startup
     logger.info("Инициализация базы данных...")
     try:
@@ -38,11 +41,24 @@ async def lifespan(app: FastAPI):
         logger.info("RAG система запущена в фоновом режиме")
     except Exception as e:
         logger.error(f"Ошибка при запуске RAG системы: {e}")
+
+    logger.info("Запуск планировщика метрик...")
+    try:
+        metrics_scheduler_task = asyncio.create_task(run_metrics_scheduler())
+        logger.info("Планировщик метрик запущен")
+    except Exception as e:
+        logger.error(f"Ошибка при запуске планировщика метрик: {e}")
     
     yield
     
     # Shutdown
     logger.info("Завершение работы RAG системы...")
+    if metrics_scheduler_task:
+        metrics_scheduler_task.cancel()
+        try:
+            await metrics_scheduler_task
+        except asyncio.CancelledError:
+            pass
 
 
 async def initialize_rag_system():

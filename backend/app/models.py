@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Table, Boolean
+from sqlalchemy import Column, Integer, String, Text, DateTime, Date, ForeignKey, Table, Boolean, Numeric
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
@@ -82,3 +82,20 @@ class ResponseFeedback(Base):
 
     query_log = relationship("QueryLog", back_populates="feedbacks")
 
+
+class HrUsageMetric(Base):
+    """
+    Таблица агрегированных метрик DAU/MAU/Retention.
+    """
+    __tablename__ = "hr_usage_metrics"
+    __table_args__ = {'schema': SCHEMA_NAME}
+
+    id = Column(Integer, primary_key=True, index=True)
+    metric_date = Column(Date, nullable=False, unique=True, comment="Дата среза метрик (MSK)")
+    dau = Column(Integer, nullable=True, comment="DAU за дату metric_date")
+    mau = Column(Integer, nullable=True, comment="MAU, рассчитывается 1-го числа месяца в 03:00 MSK")
+    retention_week = Column(Numeric(5, 2), nullable=True, comment="Retention % за 7 дней")
+    retention_month = Column(Numeric(5, 2), nullable=True, comment="Retention % за 30 дней")
+    retention_quarter = Column(Numeric(5, 2), nullable=True, comment="Retention % за 90 дней")
+    calculated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, comment="UTC время расчета")
+    source_timezone = Column(String(50), nullable=False, default="Europe/Moscow", comment="Таймзона расчета")

@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from plotly.subplots import make_subplots
 
 
 # Настройка страницы
@@ -126,24 +127,18 @@ with st.sidebar:
         label_visibility="collapsed",
     )
 
-    st.markdown("---")
-
     # Тип оценки
     st.subheader("Тип оценки")
     score_type_ui = st.radio(
         "Тип оценки",
-        options=["Все", "Только Like", "Только Dislike"],
+        options=["Все", "Like", "Dislike"],
         index=0,
         label_visibility="collapsed",
     )
 
-    st.markdown("---")
-
     # Контекст найден
     st.subheader("Контекст найден")
     filter_context = st.checkbox("Контекст найден", value=True)
-
-    st.markdown("---")
 
     # Максимальное количество строк
     max_rows = st.slider(
@@ -153,26 +148,89 @@ with st.sidebar:
         value=10,
     )
 
-    st.markdown("---")
-
     # Кнопка оставлена для UX, но фильтры применяются автоматически при изменении
     if st.button("Применить фильтр"):
         st.cache_data.clear()
 
     st.markdown("---")
-    st.subheader("Отображение данных")
-
 
 score_type_map = {
     "Все": "all",
-    "Только Like": "like",
-    "Только Dislike": "dislike",
+    "Like": "like",
+    "Dislike": "dislike",
 }
 
-# Основной контент
-st.title("Результаты работы приложения")
-st.markdown(f"**Отчет за период с {date_start.strftime('%d.%m.%Y')} по {date_end.strftime('%d.%m.%Y')}**")
-st.markdown("---")
+def build_questions_dataframe(rows: list) -> pd.DataFrame:
+    table_data = []
+    for row in rows:
+        row_date_raw = row.get("date", "")
+        row_date = ""
+        row_time = ""
+        if row_date_raw:
+            parsed_dt = pd.to_datetime(row_date_raw, utc=True).tz_convert(None)
+            row_date = parsed_dt.strftime("%Y-%m-%d")
+            row_time = parsed_dt.strftime("%H:%M:%S")
+
+        table_data.append(
+            {
+                "ID": row.get("id"),
+                "Дата": row_date,
+                "Время": row_time,
+                "Вопрос": (row.get("question") or "").strip() or "—",
+                "Ответ": (row.get("answer") or "").strip() or "—",
+                "Оценка": row.get("operation", ""),
+                "Контекст": row.get("content", ""),
+                "Статус": row.get("status", ""),
+            }
+        )
+    return pd.DataFrame(table_data)
+
+
+def build_analytics_dataframe(report_data: dict) -> pd.DataFrame:
+    """
+    Строит ряд метрик для вкладки аналитики.
+    1) Если backend отдает сохраненные срезы метрик (metrics_history), используем их.
+    2) Иначе строим fallback из daily_stats + текущих DAO/MAO.
+    """
+    raw_history = report_data.get("metrics_history") or report_data.get("analytics_history") or []
+    if raw_history:
+        normalized = []
+        for item in raw_history:
+            metric_date = item.get("date") or item.get("day")
+            if not metric_date:
+                continue
+            retention_value = item.get("retention_rate")
+            if retention_value is None:
+                retention_value = item.get("retension_rate")
+            normalized.append(
+                {
+                    "Дата": metric_date,
+                    "DAU": item.get("dau", item.get("dao")),
+                    "MAU": item.get("mau", item.get("mao")),
+                    "Retention Rate, %": retention_value,
+                }
+            )
+        if normalized:
+            df = pd.DataFrame(normalized)
+            df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
+            return df.sort_values("Дата").reset_index(drop=True)
+
+    daily_stats = report_data.get("daily_stats", [])
+    if not daily_stats:
+        return pd.DataFrame(columns=["Дата", "DAU", "MAU", "Retention Rate, %"])
+
+    df = pd.DataFrame(daily_stats).rename(columns={"day": "Дата", "count": "DAU"})
+    df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
+    df = df.sort_values("Дата").reset_index(drop=True)
+
+    df["Retention Rate, %"] = pd.NA
+    df["MAU"] = pd.NA
+    if not df.empty:
+        current_month_start = pd.Timestamp(datetime(date_end.year, date_end.month, 1).date())
+        df.loc[df["Дата"] == current_month_start, "MAU"] = report_data.get("mao", 0)
+
+    return df
+
 
 if date_end < date_start:
     st.error("Дата окончания не может быть меньше даты начала")
@@ -190,114 +248,112 @@ except requests.RequestException as exc:
     st.error(f"Не удалось получить данные из backend: {exc}")
     st.stop()
 
-# Расчет метрик из API
-total_records = report.get("total_records", 0)
-like_count = report.get("like_count", 0)
-dislike_count = report.get("dislike_count", 0)
-context_found = report.get("context_found", 0)
-dao = report.get("dao", 0)
-mao = report.get("mao", 0)
+tab_questions, tab_analytics = st.tabs(["Вопросы и ответы", "Аналитика"])
 
-# Отображение метрик в пять колонок
-col1, col2, col3, col4, col5 = st.columns(5)
+with tab_questions:
+    st.title("Список вопросов и ответов")
+    st.markdown(f"**Отчет за период с {date_start.strftime('%d.%m.%Y')} по {date_end.strftime('%d.%m.%Y')}**")
+    st.markdown("---")
 
-with col1:
-    st.markdown('<div class="metric-label">Всего записей</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="metric-value">{total_records}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-good">↑ +12.3% vs вчера</div>', unsafe_allow_html=True)
+    st.subheader("Детальные результаты")
+    rows = report.get("rows", [])
+    if rows:
+        df_rows = build_questions_dataframe(rows)
+        st.dataframe(df_rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("По выбранным настройкам данных не найдено.")
 
-with col2:
-    st.markdown('<div class="metric-label">Like / Dislike</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="metric-value">{like_count} / {dislike_count}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-good">↑ 100.0% позитивных</div>', unsafe_allow_html=True)
+with tab_analytics:
+    st.title("Аналитика")
+    st.markdown(f"**Интервал анализа: {date_start.strftime('%d.%m.%Y')} - {date_end.strftime('%d.%m.%Y')}**")
+    st.caption(
+        "DAU и Retention Rate считаются ежедневно в 03:00 (Europe/Moscow), "
+        "MAU рассчитывается 1-го числа месяца в 03:00 (Europe/Moscow)."
+    )
 
-with col3:
-    st.markdown('<div class="metric-label">Контекст найден</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="metric-value">{context_found}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-good">↑ 100.0% успешно</div>', unsafe_allow_html=True)
+    dau = report.get("dao", 0)
+    mau = report.get("mao", 0)
 
-with col4:
-    st.markdown('<div class="metric-label">DAO</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="metric-value">{dao}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-good">уникальных пользователей</div>', unsafe_allow_html=True)
+    analytics_df = build_analytics_dataframe(report)
+    retention_latest = None
+    if not analytics_df.empty and "Retention Rate, %" in analytics_df.columns:
+        retention_series = analytics_df["Retention Rate, %"].dropna()
+        if not retention_series.empty:
+            retention_latest = float(retention_series.iloc[-1])
 
-with col5:
-    st.markdown('<div class="metric-label">MAO</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="metric-value">{mao}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-good">уникальных пользователей</div>', unsafe_allow_html=True)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("DAU", int(dau) if pd.notna(dau) else 0)
+    with col2:
+        st.metric("MAU", int(mau) if pd.notna(mau) else 0)
+    with col3:
+        if retention_latest is not None:
+            st.metric("Retention Rate", f"{retention_latest:.2f}%")
+        else:
+            st.metric("Retention Rate", "—")
 
-st.markdown("---")
+    st.markdown("---")
+    st.subheader("Таблица метрик")
+    if analytics_df.empty:
+        st.info("Нет данных метрик за выбранный период.")
+    else:
+        display_df = analytics_df.copy()
+        display_df["Дата"] = display_df["Дата"].dt.strftime("%Y-%m-%d")
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-# Детальные результаты
-st.subheader("Детальные результаты")
-
-rows = report.get("rows", [])
-if rows:
-    st.markdown("**Раскрытие строк (вопрос/ответ)**")
-    for row in rows:
-        row_id = row.get("id")
-        row_date_raw = row.get("date", "")
-        row_date = ""
-        row_time = ""
-        if row_date_raw:
-            parsed_dt = pd.to_datetime(row_date_raw, utc=True).tz_convert(None)
-            row_date = parsed_dt.strftime("%Y-%m-%d")
-            row_time = parsed_dt.strftime("%H:%M:%S")
-        row_operation = row.get("operation", "")
-        row_content = row.get("content", "")
-        row_status = row.get("status", "")
-        row_question = (row.get("question") or "").strip()
-        row_answer = (row.get("answer") or "").strip()
-
-        title = (
-            f"id: {row_id} | дата={row_date} | время: {row_time} | "
-            f"Оценка: {row_operation} | Контент: {row_content} | статус выполнения: {row_status}"
+    st.markdown("---")
+    st.subheader("Графики изменения метрик")
+    if analytics_df.empty:
+        st.info("Нет данных для построения графиков.")
+    else:
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_trace(
+            go.Scatter(
+                x=analytics_df["Дата"],
+                y=analytics_df["DAU"],
+                mode="lines+markers",
+                name="DAU",
+                line=dict(color="#1f77b4"),
+            ),
+            secondary_y=False,
         )
-        with st.expander(title):
-            st.markdown("**Вопрос:**")
-            st.write(row_question or "—")
-            st.markdown("**Ответ:**")
-            st.write(row_answer or "—")
-else:
-    st.warning("Нет данных для отображения")
-
-st.markdown("---")
-
-# График оценок
-st.subheader("График оценок")
-
-daily_stats = report.get("daily_stats", [])
-if daily_stats:
-    days = [item["day"] for item in daily_stats]
-    counts = [item["count"] for item in daily_stats]
-
-    fig = go.Figure(
-        data=[
-            go.Bar(
-                x=days,
-                y=counts,
-                marker_color="#1f77b4",
-                hovertemplate="Дата: %{x}<br>Количество: %{y}<extra></extra>",
+        if analytics_df["MAU"].notna().any():
+            fig.add_trace(
+                go.Scatter(
+                    x=analytics_df["Дата"],
+                    y=analytics_df["MAU"],
+                    mode="lines+markers",
+                    name="MAU",
+                    line=dict(color="#2ca02c"),
+                ),
+                secondary_y=False,
             )
-        ]
-    )
+        if analytics_df["Retention Rate, %"].notna().any():
+            fig.add_trace(
+                go.Scatter(
+                    x=analytics_df["Дата"],
+                    y=analytics_df["Retention Rate, %"],
+                    mode="lines+markers",
+                    name="Retention Rate, %",
+                    line=dict(color="#ff7f0e"),
+                ),
+                secondary_y=True,
+            )
 
-    fig.update_layout(
-        xaxis_title="Дата",
-        yaxis_title="Количество оценок",
-        showlegend=False,
-        height=400,
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        margin=dict(l=20, r=20, t=20, b=20),
-    )
-
-    fig.update_xaxes(gridcolor="lightgray")
-    fig.update_yaxes(gridcolor="lightgray")
-
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("Нет данных для построения графика")
+        fig.update_layout(
+            height=450,
+            hovermode="x unified",
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            margin=dict(l=20, r=20, t=20, b=20),
+            legend=dict(orientation="h", y=1.12, x=0),
+        )
+        fig.update_xaxes(title_text="Дата", gridcolor="lightgray")
+        fig.update_yaxes(title_text="Пользователи", secondary_y=False, gridcolor="lightgray")
+        fig.update_yaxes(title_text="Retention Rate, %", secondary_y=True, gridcolor="lightgray")
+        st.plotly_chart(fig, use_container_width=True)
+        if not analytics_df["Retention Rate, %"].notna().any():
+            st.info("История Retention Rate не получена из backend (ожидается из таблицы сохраненных метрик).")
 
 # Footer
 st.markdown("---")

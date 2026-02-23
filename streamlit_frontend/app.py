@@ -352,19 +352,19 @@ def display_message(sender, text, timestamp, sources=None, is_error=False, is_th
     """, unsafe_allow_html=True)
     
     # Отображение источников
-    if sources and len(sources) > 0:
-        with st.expander(f"📚 Источники ({len(sources)})", expanded=False):
-            for i, source in enumerate(sources):
-                st.markdown(f"""
-                <div class="source-item">
-                    <div class="source-header">
-                        #{i+1} - {source.get('metadata', {}).get('source', source.get('title', 'Неизвестный источник'))}
-                    </div>
-                    <div class="source-content">
-                        {render_markdown(source.get('content', ''))}
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+    # if sources and len(sources) > 0:
+    #     with st.expander(f"📚 Источники ({len(sources)})", expanded=False):
+    #         for i, source in enumerate(sources):
+    #             st.markdown(f"""
+    #             <div class="source-item">
+    #                 <div class="source-header">
+    #                     #{i+1} - {source.get('metadata', {}).get('source', source.get('title', 'Неизвестный источник'))}
+    #                 </div>
+    #                 <div class="source-content">
+    #                     {render_markdown(source.get('content', ''))}
+    #                 </div>
+    #             </div>
+    #             """, unsafe_allow_html=True)
 
 def main():
     # Заголовок

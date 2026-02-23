@@ -24,10 +24,11 @@ from ..schemas import (
     AdminHrRow,
     AdminHrHourlyStat,
     AdminHrDailyStat,
+    AdminHrMetricPoint,
 )
 from ..rag_system import rag_system
 from ..logger import qa_logger
-from ..models import ResponseFeedback, QueryLog, query_log_chunks
+from ..models import ResponseFeedback, QueryLog, HrUsageMetric, query_log_chunks
 from ..database import get_db_session
 
 
@@ -296,7 +297,10 @@ async def query_stream(request: QueryRequest, http_request: Request):
 
         async def token_stream_async():
             loop = asyncio.get_running_loop()
-            queue: asyncio.Queue = asyncio.Queue()
+            queue: asyncio.Queue[tuple[bytes, bool]] = asyncio.Queue()
+
+            def push_event(payload: dict | str, *, terminal: bool = False) -> None:
+                loop.call_soon_threadsafe(queue.put_nowait, (sse_format(payload), terminal))
 
             # Подготовим и отправим источники (чанки) отдельным событием до начала токенов
             sources_payload = []
@@ -344,13 +348,13 @@ async def query_stream(request: QueryRequest, http_request: Request):
                             token_count += 1
                             answer_parts.append(text)  # Собираем части ответа для логирования
                             response_generated = True  # Отмечаем, что ответ начал генерироваться
-                            
-                            loop.call_soon_threadsafe(queue.put_nowait, ("token", text))
+
+                            push_event({"token": text})
                     logger.info("[STREAM] completed. total_chunks=%s", token_count)
                 except Exception as e:
                     stream_error = str(e)
                     logger.error("[STREAM] error while streaming: %s", stream_error)
-                    loop.call_soon_threadsafe(queue.put_nowait, ("error", stream_error))
+                    push_event({"error": stream_error}, terminal=True)
                 finally:
                     processing_time = time.time() - start_time
                     full_answer = "".join(answer_parts) if answer_parts else ""
@@ -373,8 +377,8 @@ async def query_stream(request: QueryRequest, http_request: Request):
                     answer_text = full_answer.split('</think>')[-1].strip()
                     logger.info(f"[STREAM] Логирование завершено. Ответ: {len(answer_text)} символов, query_log_id: {query_log_id}, ошибка: {stream_error}")
                     if query_log_id is not None:
-                        loop.call_soon_threadsafe(queue.put_nowait, ("query_log_id", query_log_id))
-                    loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+                        push_event({"query_log_id": query_log_id})
+                    push_event("[DONE]", terminal=True)
 
             # Сначала отправляем sources синхронно, чтобы они были первыми
             if len(sources_payload) > 0:
@@ -388,7 +392,7 @@ async def query_stream(request: QueryRequest, http_request: Request):
             STREAM_IDLE_TIMEOUT = 90  # меньше, чем read timeout на фронте (120с)
             while True:
                 try:
-                    kind, payload = await asyncio.wait_for(queue.get(), timeout=STREAM_IDLE_TIMEOUT)
+                    payload, terminal = await asyncio.wait_for(queue.get(), timeout=STREAM_IDLE_TIMEOUT)
                 except asyncio.TimeoutError:
                     logger.warning(
                         "[STREAM] Таймаут ожидания ответа от LLM (%.0f с). API не закрыл стрим. Отправляем [DONE] с частичным ответом.",
@@ -396,21 +400,8 @@ async def query_stream(request: QueryRequest, http_request: Request):
                     )
                     yield sse_format("[DONE]")
                     break
-                if kind == "token":
-                    yield sse_format({"token": payload})
-                elif kind == "sources":
-                    # Эта ветка больше не нужна, так как sources отправляются синхронно выше
-                    logger.info("[STREAM] получен sources event в очереди (пропускаем, уже отправлено)")
-                    continue
-                elif kind == "error":
-                    yield sse_format({"error": payload})
-                    break
-                elif kind == "query_log_id":
-                    if payload is not None:
-                        yield sse_format({"query_log_id": payload})
-                    continue
-                elif kind == "done":
-                    yield sse_format("[DONE]")
+                yield payload
+                if terminal:
                     break
 
         return StreamingResponse(token_stream_async(), media_type="text/event-stream", headers={
@@ -599,6 +590,40 @@ async def get_admin_hr_report(
             mao_actors = {k for k in (actor_key(r) for r in month_rows) if k}
             mao = len(mao_actors)
 
+            metrics_rows = (
+                db.query(HrUsageMetric)
+                .filter(
+                    HrUsageMetric.metric_date >= start_date,
+                    HrUsageMetric.metric_date <= end_date,
+                )
+                .order_by(HrUsageMetric.metric_date.asc())
+                .all()
+            )
+
+            latest_dau_row = (
+                db.query(HrUsageMetric)
+                .filter(
+                    HrUsageMetric.metric_date <= end_date,
+                    HrUsageMetric.dau.isnot(None),
+                )
+                .order_by(HrUsageMetric.metric_date.desc())
+                .first()
+            )
+            if latest_dau_row and latest_dau_row.dau is not None:
+                dao = int(latest_dau_row.dau)
+
+            latest_mau_row = (
+                db.query(HrUsageMetric)
+                .filter(
+                    HrUsageMetric.metric_date <= end_date,
+                    HrUsageMetric.mau.isnot(None),
+                )
+                .order_by(HrUsageMetric.metric_date.desc())
+                .first()
+            )
+            if latest_mau_row and latest_mau_row.mau is not None:
+                mao = int(latest_mau_row.mau)
+
             table_rows = []
             for row in dataset_rows[:limit]:
                 created_at = row.created_at
@@ -642,6 +667,19 @@ async def get_admin_hr_report(
                 for day in sorted(day_buckets.keys())
             ]
 
+            metrics_history = [
+                AdminHrMetricPoint(
+                    date=row.metric_date,
+                    dau=int(row.dau) if row.dau is not None else None,
+                    mau=int(row.mau) if row.mau is not None else None,
+                    retention_rate=float(row.retention_week) if row.retention_week is not None else None,
+                    retention_week=float(row.retention_week) if row.retention_week is not None else None,
+                    retention_month=float(row.retention_month) if row.retention_month is not None else None,
+                    retention_quarter=float(row.retention_quarter) if row.retention_quarter is not None else None,
+                )
+                for row in metrics_rows
+            ]
+
             return AdminHrReportResponse(
                 total_records=total_records,
                 like_count=like_count,
@@ -652,6 +690,7 @@ async def get_admin_hr_report(
                 rows=table_rows,
                 hourly_stats=hourly_stats,
                 daily_stats=daily_stats,
+                metrics_history=metrics_history,
             )
     except HTTPException:
         raise
