@@ -11,7 +11,7 @@ import time
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv, find_dotenv
-from sqlalchemy import func, case, and_
+from sqlalchemy import func, case, and_, text
 
 from ..schemas import (
     QueryRequest,
@@ -540,6 +540,39 @@ async def get_admin_hr_report(
 
             dataset_rows = base_query.order_by(QueryLog.created_at.asc()).all()
 
+            # Подтягиваем ФИО пользователей из gui_logs.user (login -> name).
+            user_full_names_by_login: dict[str, str] = {}
+            try:
+                users_table_exists = db.execute(
+                    text(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM information_schema.tables
+                            WHERE table_schema = 'gui_logs'
+                              AND table_name = 'user'
+                        ) AS exists_flag
+                        """
+                    )
+                ).scalar()
+
+                if users_table_exists:
+                    users_rows = db.execute(
+                        text(
+                            """
+                            SELECT login, name
+                            FROM gui_logs."user"
+                            """
+                        )
+                    ).all()
+                    for user_row in users_rows:
+                        login_value = (user_row.login or "").strip() if user_row.login else ""
+                        full_name_value = (user_row.name or "").strip() if user_row.name else ""
+                        if login_value and full_name_value:
+                            user_full_names_by_login[login_value] = full_name_value
+            except Exception as users_exc:
+                logger.warning(f"Не удалось загрузить ФИО из таблицы gui_logs.user: {users_exc}")
+
             total_records = len(dataset_rows)
             like_count = sum(1 for r in dataset_rows if r.operation == "Like")
             dislike_count = sum(1 for r in dataset_rows if r.operation == "Dislike")
@@ -745,6 +778,7 @@ async def get_admin_hr_report(
                         content="Найден" if row.context_found else "Не найден",
                         status="Успешно" if row.status == "success" else "Ошибка",
                         hour=created_at.hour,
+                        full_name=user_full_names_by_login.get((row.user_login or "").strip()) or (row.user_login or ""),
                         question=row.question,
                         answer=row.answer,
                     )

@@ -179,6 +179,7 @@ def build_questions_dataframe(rows: list) -> pd.DataFrame:
                 "ID": row.get("id"),
                 "Дата": row_date,
                 "Время": row_time,
+                "ФИО": (row.get("full_name") or "").strip() or "—",
                 "Вопрос": (row.get("question") or "").strip() or "—",
                 "Ответ": (row.get("answer") or "").strip() or "—",
                 "Оценка": row.get("operation", ""),

@@ -118,6 +118,7 @@ class AdminHrRow(BaseModel):
     content: str
     status: str
     hour: int
+    full_name: Optional[str] = None
     question: str
     answer: Optional[str] = None
 
