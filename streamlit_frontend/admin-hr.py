@@ -106,8 +106,10 @@ def fetch_admin_report(
 with st.sidebar:
     st.header("Настройки фильтров")
 
-    default_end = datetime.utcnow().date()
-    default_start = default_end - timedelta(days=1)
+    # Неделя в фильтре начинается с понедельника
+    today = datetime.utcnow().date()
+    default_start = today - timedelta(days=today.weekday())  # Monday
+    default_end = today
 
     # Даты
     st.subheader("Дата начала")
@@ -115,6 +117,7 @@ with st.sidebar:
         "Дата начала",
         value=default_start,
         key="start_date",
+        format="DD.MM.YYYY",
         label_visibility="collapsed",
     )
 
@@ -123,6 +126,7 @@ with st.sidebar:
         "Дата окончания",
         value=default_end,
         key="end_date",
+        format="DD.MM.YYYY",
         label_visibility="collapsed",
     )
 
@@ -148,10 +152,10 @@ with st.sidebar:
     )
 
     # Кнопка оставлена для UX, но фильтры применяются автоматически при изменении
-    if st.button("Применить фильтр"):
-        st.cache_data.clear()
+    # if st.button("Применить фильтр"):
+    #     st.cache_data.clear()
 
-    st.markdown("---")
+    # st.markdown("---")
 
 score_type_map = {
     "Все": "all",
