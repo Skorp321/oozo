@@ -9,6 +9,7 @@ import logging
 import asyncio
 import time
 from datetime import date, datetime, time as dt_time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv, find_dotenv
 from sqlalchemy import func, case, and_
 
@@ -473,6 +474,7 @@ async def get_admin_hr_report(
 
     start_dt = datetime.combine(start_date, dt_time.min).replace(tzinfo=timezone.utc)
     end_dt = datetime.combine(end_date + timedelta(days=1), dt_time.min).replace(tzinfo=timezone.utc)
+    moscow_tz = ZoneInfo("Europe/Moscow")
 
     try:
         with get_db_session() as db:
@@ -552,6 +554,33 @@ async def get_admin_hr_report(
                     return f"ip:{ip}"
                 return None
 
+            def actor_key_from_values(user_login: Optional[str], user_ip: Optional[str]) -> Optional[str]:
+                login = (user_login or "").strip()
+                if login:
+                    return f"login:{login}"
+                ip = (user_ip or "").strip()
+                if ip:
+                    return f"ip:{ip}"
+                return None
+
+            def retention_rate_for_day(
+                actor_days_map: dict[str, set[date]],
+                day: date,
+                window_days: int,
+            ) -> Optional[float]:
+                window_start = day - timedelta(days=window_days - 1)
+                total_active = 0
+                returned = 0
+                for active_days in actor_days_map.values():
+                    days_in_window = sum(1 for d in active_days if window_start <= d <= day)
+                    if days_in_window >= 1:
+                        total_active += 1
+                        if days_in_window > 1:
+                            returned += 1
+                if total_active == 0:
+                    return None
+                return round((returned / total_active) * 100, 2)
+
             # DAO/MAO считаются по всем пользователям сервиса (без учета текущих фильтров отчета)
             day_start = datetime.combine(end_date, dt_time.min).replace(tzinfo=timezone.utc)
             day_end = datetime.combine(end_date + timedelta(days=1), dt_time.min).replace(tzinfo=timezone.utc)
@@ -590,6 +619,43 @@ async def get_admin_hr_report(
             mao_actors = {k for k in (actor_key(r) for r in month_rows) if k}
             mao = len(mao_actors)
 
+            retention_window_start = start_date - timedelta(days=89)
+            retention_start_dt = (
+                datetime.combine(retention_window_start, dt_time.min, tzinfo=moscow_tz).astimezone(timezone.utc)
+            )
+            retention_end_dt = (
+                datetime.combine(end_date + timedelta(days=1), dt_time.min, tzinfo=moscow_tz).astimezone(timezone.utc)
+            )
+
+            activity_rows = (
+                db.query(
+                    QueryLog.user_login.label("user_login"),
+                    QueryLog.user_ip.label("user_ip"),
+                    QueryLog.created_at.label("created_at"),
+                )
+                .filter(
+                    QueryLog.created_at >= retention_start_dt,
+                    QueryLog.created_at < retention_end_dt,
+                )
+                .all()
+            )
+
+            actor_days: dict[str, set[date]] = {}
+            for row in activity_rows:
+                if row.created_at is None:
+                    continue
+                actor = actor_key_from_values(row.user_login, row.user_ip)
+                if not actor:
+                    continue
+                activity_day = row.created_at.astimezone(moscow_tz).date()
+                actor_days.setdefault(actor, set()).add(activity_day)
+
+            dau_by_day: dict[date, int] = {}
+            for days in actor_days.values():
+                for day in days:
+                    if start_date <= day <= end_date:
+                        dau_by_day[day] = dau_by_day.get(day, 0) + 1
+
             metrics_rows = (
                 db.query(HrUsageMetric)
                 .filter(
@@ -599,6 +665,45 @@ async def get_admin_hr_report(
                 .order_by(HrUsageMetric.metric_date.asc())
                 .all()
             )
+            metrics_by_date = {row.metric_date: row for row in metrics_rows}
+
+            day_cursor = start_date
+            metrics_history = []
+            while day_cursor <= end_date:
+                metric_row = metrics_by_date.get(day_cursor)
+
+                retention_week = (
+                    float(metric_row.retention_week)
+                    if metric_row and metric_row.retention_week is not None
+                    else retention_rate_for_day(actor_days, day_cursor, 7)
+                )
+                retention_month = (
+                    float(metric_row.retention_month)
+                    if metric_row and metric_row.retention_month is not None
+                    else retention_rate_for_day(actor_days, day_cursor, 30)
+                )
+                retention_quarter = (
+                    float(metric_row.retention_quarter)
+                    if metric_row and metric_row.retention_quarter is not None
+                    else retention_rate_for_day(actor_days, day_cursor, 90)
+                )
+
+                metrics_history.append(
+                    AdminHrMetricPoint(
+                        date=day_cursor,
+                        dau=(
+                            int(metric_row.dau)
+                            if metric_row and metric_row.dau is not None
+                            else dau_by_day.get(day_cursor)
+                        ),
+                        mau=int(metric_row.mau) if metric_row and metric_row.mau is not None else None,
+                        retention_rate=retention_week,
+                        retention_week=retention_week,
+                        retention_month=retention_month,
+                        retention_quarter=retention_quarter,
+                    )
+                )
+                day_cursor += timedelta(days=1)
 
             latest_dau_row = (
                 db.query(HrUsageMetric)
@@ -611,6 +716,8 @@ async def get_admin_hr_report(
             )
             if latest_dau_row and latest_dau_row.dau is not None:
                 dao = int(latest_dau_row.dau)
+            else:
+                dao = dau_by_day.get(end_date, 0)
 
             latest_mau_row = (
                 db.query(HrUsageMetric)
@@ -665,19 +772,6 @@ async def get_admin_hr_report(
             daily_stats = [
                 AdminHrDailyStat(day=day, count=day_buckets[day])
                 for day in sorted(day_buckets.keys())
-            ]
-
-            metrics_history = [
-                AdminHrMetricPoint(
-                    date=row.metric_date,
-                    dau=int(row.dau) if row.dau is not None else None,
-                    mau=int(row.mau) if row.mau is not None else None,
-                    retention_rate=float(row.retention_week) if row.retention_week is not None else None,
-                    retention_week=float(row.retention_week) if row.retention_week is not None else None,
-                    retention_month=float(row.retention_month) if row.retention_month is not None else None,
-                    retention_quarter=float(row.retention_quarter) if row.retention_quarter is not None else None,
-                )
-                for row in metrics_rows
             ]
 
             return AdminHrReportResponse(

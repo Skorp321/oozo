@@ -5,7 +5,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
-from plotly.subplots import make_subplots
 
 
 # Настройка страницы
@@ -207,7 +206,9 @@ def build_analytics_dataframe(report_data: dict) -> pd.DataFrame:
                     "Дата": metric_date,
                     "DAU": item.get("dau", item.get("dao")),
                     "MAU": item.get("mau", item.get("mao")),
-                    "Retention Rate, %": retention_value,
+                    "Retention 7d, %": item.get("retention_week", retention_value),
+                    "Retention 30d, %": item.get("retention_month"),
+                    "Retention 90d, %": item.get("retention_quarter"),
                 }
             )
         if normalized:
@@ -217,13 +218,15 @@ def build_analytics_dataframe(report_data: dict) -> pd.DataFrame:
 
     daily_stats = report_data.get("daily_stats", [])
     if not daily_stats:
-        return pd.DataFrame(columns=["Дата", "DAU", "MAU", "Retention Rate, %"])
+        return pd.DataFrame(columns=["Дата", "DAU", "MAU", "Retention 7d, %", "Retention 30d, %", "Retention 90d, %"])
 
     df = pd.DataFrame(daily_stats).rename(columns={"day": "Дата", "count": "DAU"})
     df["Дата"] = pd.to_datetime(df["Дата"], errors="coerce")
     df = df.sort_values("Дата").reset_index(drop=True)
 
-    df["Retention Rate, %"] = pd.NA
+    df["Retention 7d, %"] = pd.NA
+    df["Retention 30d, %"] = pd.NA
+    df["Retention 90d, %"] = pd.NA
     df["MAU"] = pd.NA
     if not df.empty:
         current_month_start = pd.Timestamp(datetime(date_end.year, date_end.month, 1).date())
@@ -275,70 +278,56 @@ with tab_analytics:
     mau = report.get("mao", 0)
 
     analytics_df = build_analytics_dataframe(report)
-    retention_latest = None
-    if not analytics_df.empty and "Retention Rate, %" in analytics_df.columns:
-        retention_series = analytics_df["Retention Rate, %"].dropna()
-        if not retention_series.empty:
-            retention_latest = float(retention_series.iloc[-1])
+    retention_7d_latest = None
+    retention_30d_latest = None
+    retention_90d_latest = None
+    if not analytics_df.empty:
+        retention_7d_series = analytics_df["Retention 7d, %"].dropna()
+        retention_30d_series = analytics_df["Retention 30d, %"].dropna()
+        retention_90d_series = analytics_df["Retention 90d, %"].dropna()
+        if not retention_7d_series.empty:
+            retention_7d_latest = float(retention_7d_series.iloc[-1])
+        if not retention_30d_series.empty:
+            retention_30d_latest = float(retention_30d_series.iloc[-1])
+        if not retention_90d_series.empty:
+            retention_90d_latest = float(retention_90d_series.iloc[-1])
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("DAU", int(dau) if pd.notna(dau) else 0)
     with col2:
         st.metric("MAU", int(mau) if pd.notna(mau) else 0)
     with col3:
-        if retention_latest is not None:
-            st.metric("Retention Rate", f"{retention_latest:.2f}%")
+        if retention_7d_latest is not None:
+            st.metric("Retention 7d", f"{retention_7d_latest:.2f}%")
         else:
-            st.metric("Retention Rate", "—")
+            st.metric("Retention 7d", "—")
+    with col4:
+        if retention_30d_latest is not None:
+            st.metric("Retention 30d", f"{retention_30d_latest:.2f}%")
+        else:
+            st.metric("Retention 30d", "—")
+    with col5:
+        if retention_90d_latest is not None:
+            st.metric("Retention 90d", f"{retention_90d_latest:.2f}%")
+        else:
+            st.metric("Retention 90d", "—")
 
     st.markdown("---")
-    st.subheader("Таблица метрик")
-    if analytics_df.empty:
-        st.info("Нет данных метрик за выбранный период.")
-    else:
-        display_df = analytics_df.copy()
-        display_df["Дата"] = display_df["Дата"].dt.strftime("%Y-%m-%d")
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-    st.subheader("Графики изменения метрик")
+    st.subheader("График DAU по дням.")
     if analytics_df.empty:
         st.info("Нет данных для построения графиков.")
     else:
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig = go.Figure()
         fig.add_trace(
-            go.Scatter(
+            go.Bar(
                 x=analytics_df["Дата"],
                 y=analytics_df["DAU"],
-                mode="lines+markers",
                 name="DAU",
-                line=dict(color="#1f77b4"),
-            ),
-            secondary_y=False,
+                marker_color="#1f77b4",
+                opacity=0.85,
+            )
         )
-        if analytics_df["MAU"].notna().any():
-            fig.add_trace(
-                go.Scatter(
-                    x=analytics_df["Дата"],
-                    y=analytics_df["MAU"],
-                    mode="lines+markers",
-                    name="MAU",
-                    line=dict(color="#2ca02c"),
-                ),
-                secondary_y=False,
-            )
-        if analytics_df["Retention Rate, %"].notna().any():
-            fig.add_trace(
-                go.Scatter(
-                    x=analytics_df["Дата"],
-                    y=analytics_df["Retention Rate, %"],
-                    mode="lines+markers",
-                    name="Retention Rate, %",
-                    line=dict(color="#ff7f0e"),
-                ),
-                secondary_y=True,
-            )
 
         fig.update_layout(
             height=450,
@@ -349,12 +338,8 @@ with tab_analytics:
             legend=dict(orientation="h", y=1.12, x=0),
         )
         fig.update_xaxes(title_text="Дата", gridcolor="lightgray")
-        fig.update_yaxes(title_text="Пользователи", secondary_y=False, gridcolor="lightgray")
-        fig.update_yaxes(title_text="Retention Rate, %", secondary_y=True, gridcolor="lightgray")
+        fig.update_yaxes(title_text="Пользователи", gridcolor="lightgray")
         st.plotly_chart(fig, use_container_width=True)
-        if not analytics_df["Retention Rate, %"].notna().any():
-            st.info("История Retention Rate не получена из backend (ожидается из таблицы сохраненных метрик).")
-
 # Footer
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: gray;'>HR консультант © 2026</div>", unsafe_allow_html=True)
