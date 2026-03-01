@@ -34,3 +34,8 @@ requests>=2.31.0
 
 # Дополнительные утилиты
 python-multipart>=0.0.6
+
+# Observability (Arize Phoenix / OpenTelemetry)
+opentelemetry-sdk>=1.28.0
+opentelemetry-exporter-otlp>=1.28.0
+openinference-instrumentation-langchain>=0.1.29

@@ -1,144 +1,132 @@
 """
-Обертки для MCP инструментов для использования в LangGraph
+Упрощенная динамическая загрузка инструментов из MCP сервера.
 """
-import requests
+import json
 import logging
-from typing import Dict, Any, Optional
-from langchain_core.tools import tool
+import os
+from typing import Any, Dict, List
+
+import requests
+from langchain_core.tools import Tool
 
 logger = logging.getLogger(__name__)
 
-import os
-
-# URL MCP сервера (можно настроить через переменную окружения)
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8001")
 
 
-def call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Вызов инструмента через MCP сервер
-    
-    Args:
-        tool_name: Имя инструмента
-        arguments: Аргументы инструмента
-        
-    Returns:
-        Результат выполнения инструмента
-    """
+def _call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    url = f"{MCP_SERVER_URL}/mcp/tools/call"
+    payload = {"name": tool_name, "arguments": arguments}
+    response = requests.post(url, json=payload, timeout=30)
+    response.raise_for_status()
+    result = response.json()
+
+    if result.get("isError"):
+        text = result.get("content", [{}])[0].get("text", "Неизвестная ошибка")
+        return {"error": text}
+
+    text = result.get("content", [{}])[0].get("text", "")
     try:
-        url = f"{MCP_SERVER_URL}/mcp/tools/call"
-        payload = {
-            "name": tool_name,
-            "arguments": arguments
-        }
-        
-        logger.info(f"Вызов MCP инструмента '{tool_name}' с аргументами: {arguments}")
-        response = requests.post(url, json=payload, timeout=30)
-        response.raise_for_status()
-        
-        result = response.json()
-        
-        if result.get("isError"):
-            error_text = result.get("content", [{}])[0].get("text", "Неизвестная ошибка")
-            logger.error(f"Ошибка при вызове инструмента '{tool_name}': {error_text}")
-            return {"error": error_text}
-        
-        # Извлекаем текст из content
-        content = result.get("content", [{}])[0].get("text", "")
-        
-        # Пытаемся распарсить JSON если это возможно
-        try:
-            import json
-            parsed = json.loads(content)
+        return json.loads(text)
+    except Exception:
+        return {"result": text}
+
+
+def _list_mcp_tools() -> List[Dict[str, Any]]:
+    url = f"{MCP_SERVER_URL}/mcp/tools/list"
+    response = requests.post(url, timeout=20)
+    response.raise_for_status()
+    payload = response.json()
+    return payload.get("tools", [])
+
+
+def _build_tool_description(tool_info: Dict[str, Any]) -> str:
+    description = tool_info.get("description") or f"MCP инструмент {tool_info.get('name')}"
+    input_schema = tool_info.get("inputSchema") or {}
+    properties = input_schema.get("properties") or {}
+    required = set(input_schema.get("required") or [])
+
+    if not properties:
+        return description
+
+    params = []
+    for name, schema in properties.items():
+        type_name = (schema or {}).get("type", "any")
+        req = "required" if name in required else "optional"
+        params.append(f"{name}:{type_name}:{req}")
+
+    return f"{description}. Аргументы (JSON): {', '.join(params)}"
+
+
+def _parse_tool_input(tool_input: str, tool_info: Dict[str, Any]) -> Dict[str, Any]:
+    input_schema = tool_info.get("inputSchema") or {}
+    properties = input_schema.get("properties") or {}
+    required = list(input_schema.get("required") or [])
+
+    # 1) Если пришел JSON-объект, используем как есть.
+    try:
+        parsed = json.loads(tool_input)
+        if isinstance(parsed, dict):
             return parsed
-        except:
-            return {"result": content}
-            
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ошибка при запросе к MCP серверу: {e}")
-        return {"error": f"Не удалось подключиться к MCP серверу: {str(e)}"}
-    except Exception as e:
-        logger.error(f"Неожиданная ошибка при вызове инструмента: {e}")
-        return {"error": str(e)}
+    except Exception:
+        pass
+
+    # 2) Если ровно один обязательный параметр, кладем туда plain text.
+    if len(required) == 1:
+        return {required[0]: tool_input}
+
+    # 3) Если ровно одно поле в схеме, кладем туда plain text.
+    if len(properties) == 1:
+        only_field = next(iter(properties.keys()))
+        return {only_field: tool_input}
+
+    raise ValueError(
+        "Ожидается JSON-объект с аргументами инструмента "
+        f"(например: {{...}}). Получено: {tool_input}"
+    )
 
 
-@tool
-def rag_query(query: str) -> str:
+def _make_tool(tool_info: Dict[str, Any]) -> Tool:
+    name = tool_info["name"]
+    description = _build_tool_description(tool_info)
+
+    def _runner(tool_input: str) -> str:
+        try:
+            arguments = _parse_tool_input(tool_input, tool_info)
+            result = _call_mcp_tool(name, arguments)
+            if "error" in result:
+                return f"Ошибка: {result['error']}"
+            if "formatted_answer" in result:
+                return str(result["formatted_answer"])
+            if "answer" in result:
+                return str(result["answer"])
+            if "message" in result:
+                return str(result["message"])
+            if "result" in result:
+                return str(result["result"])
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as exc:
+            return f"Ошибка: {exc}"
+
+    return Tool(name=name, description=description, func=_runner)
+
+
+def get_available_tools() -> List[Tool]:
     """
-    Поиск информации в документах с помощью RAG.
-    Используйте этот инструмент для ответов на вопросы, связанные с документацией,
-    политиками компании, процедурами и другой корпоративной информацией.
-    
-    Args:
-        query: Вопрос или запрос для поиска в документах
-        
-    Returns:
-        Ответ на основе найденных документов
+    Запрашивает список инструментов из MCP сервера и строит список Tool для модели.
     """
-    result = call_mcp_tool("rag_query", {"query": query})
-    
-    if "error" in result:
-        return f"Ошибка: {result['error']}"
-    
-    # Форматируем ответ
-    answer = result.get("answer") or result.get("formatted_answer") or result.get("result", "Не удалось получить ответ")
-    
-    # Добавляем источники если есть
-    sources = result.get("sources", [])
-    if sources:
-        answer += "\n\nИсточники:"
-        for i, source in enumerate(sources[:3], 1):  # Показываем только первые 3
-            title = source.get("title", "Неизвестный источник")
-            answer += f"\n{i}. {title}"
-    
-    return answer
+    tool_infos = _list_mcp_tools()
+    if not tool_infos:
+        raise RuntimeError("MCP вернул пустой список инструментов")
 
+    tools: List[Tool] = []
+    for tool_info in tool_infos:
+        if isinstance(tool_info, dict) and "name" in tool_info:
+            tools.append(_make_tool(tool_info))
 
-@tool
-def get_personal_days(employee_name: str) -> str:
-    """
-    Получить количество персональных дней отпуска для указанного сотрудника.
-    Персональные дни - это дополнительные дни отпуска, предоставляемые сотруднику помимо основного отпуска.
-    
-    Args:
-        employee_name: Имя сотрудника (например: alice, bob, charlie)
-        
-    Returns:
-        Информация о персональных днях сотрудника
-    """
-    result = call_mcp_tool("get_personal_days", {"employee_name": employee_name})
-    
-    if "error" in result:
-        return f"Ошибка: {result['error']}"
-    
-    message = result.get("message") or f"У сотрудника {employee_name} {result.get('personal_days', 0)} персональных дней отпуска"
-    return message
+    if not tools:
+        raise RuntimeError("Не удалось построить инструменты из ответа MCP")
 
+    logger.info("Подгружено инструментов из MCP: %s", len(tools))
+    return tools
 
-@tool
-def get_remaining_vacation_days(employee_name: str) -> str:
-    """
-    Получить количество оставшихся дней основного отпуска для указанного сотрудника.
-    Возвращает разницу между общим количеством дней отпуска и уже использованными днями.
-    
-    Args:
-        employee_name: Имя сотрудника (например: alice, bob, charlie)
-        
-    Returns:
-        Информация об оставшихся днях отпуска сотрудника
-    """
-    result = call_mcp_tool("get_remaining_vacation_days", {"employee_name": employee_name})
-    
-    if "error" in result:
-        return f"Ошибка: {result['error']}"
-    
-    message = result.get("message") or f"У сотрудника {employee_name} осталось {result.get('remaining_vacation_days', 0)} дней отпуска"
-    return message
-
-
-# Список всех доступных инструментов
-AVAILABLE_TOOLS = [
-    rag_query,
-    get_personal_days,
-    get_remaining_vacation_days
-]

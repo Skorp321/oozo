@@ -152,6 +152,11 @@ GET /health
 - `INDEX_PATH` - путь к FAISS индексу
 - `MCP_SERVER_PORT` - порт MCP сервера (по умолчанию 8001)
 - `TEMPERATURE` - температура для LLM (по умолчанию 0.1)
+- `PHOENIX_ENABLED` - включить отправку трассировок в Arize Phoenix (`true/false`)
+- `PHOENIX_ENDPOINT` - OTLP HTTP endpoint Phoenix (например, `http://localhost:6006/v1/traces`)
+- `PHOENIX_PROTOCOL` - `auto` (по умолчанию), `http/protobuf` или `grpc`
+- `PHOENIX_PROJECT_NAME` - имя сервиса/проекта в Phoenix
+- `PHOENIX_API_KEY` - API key для Phoenix (если требуется)
 
 ## Разработка
 

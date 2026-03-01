@@ -14,8 +14,10 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 
 from .config import settings
+from dotenv import load_dotenv
 from .document_processor import load_docx_files, split_documents, get_document_stats
 
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 
@@ -36,6 +38,7 @@ class RAGSystem:
         self.stats = {}
         self.retriever = None
         self._initialized = False
+        self._embedding_error = None
     
     def initialize(self):
         """
@@ -65,40 +68,72 @@ class RAGSystem:
         Создание модели эмбеддингов
         """
         try:
-            # Определяем, является ли модель облачной (qwen3-0.6B-embedded через vllm)
-            # Используем облачный эмбеддер если:
-            # 1. Явно указан embedding_api_base, или
-            # 2. Название модели содержит "qwen" (qwen3-0.6B-embedded)
-            is_cloud_model = (
-                settings.embedding_api_base is not None or
-                "qwen" in settings.embedding_model_name.lower()
+            api_base = (
+                settings.embedding_api_base
+                or settings.openai_api_base
+                or "http://localhost:8000/v1"
             )
-            
-            if is_cloud_model:
-                # Используем облачный эмбеддер через vllm
-                api_base = settings.embedding_api_base or "http://localhost:8000/v1"
-                api_key = settings.embedding_api_key or settings.openai_api_key or "dummy_key"
-                
-                logger.info(
-                    "Используем облачный эмбеддер %s через vllm по адресу %s",
-                    settings.embedding_model_name,
-                    api_base,
-                )
-                self.embeddings = OpenAIEmbeddings(
-                    model=settings.embedding_model_name,
-                    openai_api_key=api_key,
-                    openai_api_base=api_base,
-                    timeout=600,
-                )
-                logger.info("Модель эмбеддингов создана")
+            api_key = settings.embedding_api_key or settings.openai_api_key or "dummy_key"
+
+            logger.info(
+                "Инициализация эмбеддинговой модели %s (api_base=%s)",
+                settings.embedding_model_name,
+                api_base,
+            )
+
+            candidate_embeddings = OpenAIEmbeddings(
+                model=settings.embedding_model_name,
+                openai_api_key=api_key,
+                openai_api_base=api_base,
+                timeout=600,
+            )
+
+            # Проверяем доступность эндпоинта заранее, чтобы не падать во время старта MCP.
+            candidate_embeddings.embed_query("healthcheck")
+            self.embeddings = candidate_embeddings
+            self._embedding_error = None
+            logger.info("Модель эмбеддингов создана и проверена")
         except Exception as e:
-            logger.error(f"Ошибка при загрузке модели эмбеддингов: {e}")
-            raise
+            self.embeddings = None
+            self._embedding_error = str(e)
+            logger.warning(
+                "Эмбеддинги недоступны, RAG продолжит работу в BM25-only режиме: %s",
+                e,
+            )
+
+    def _init_bm25_only_retriever(self):
+        """Создание BM25 ретривера без векторного поиска."""
+        self.documents = load_docx_files(settings.docs_path)
+        chunks = split_documents(self.documents) if self.documents else []
+
+        if chunks:
+            self.retriever = BM25Retriever.from_documents(chunks)
+            self.vector_store = None
+            self._update_stats(chunks)
+            logger.info("Создан BM25-only ретривер: %s чанков", len(chunks))
+        else:
+            self.retriever = None
+            self.vector_store = None
+            self.stats = {
+                "total_documents": 0,
+                "total_chunks": 0,
+                "index_size_mb": 0,
+                "last_updated": datetime.now().isoformat()
+            }
+            logger.warning("Документы для BM25 не найдены")
     
     def _load_or_create_vector_store(self):
         """
         Загрузка существующего или создание нового векторного хранилища
         """
+        if self.embeddings is None:
+            logger.warning(
+                "Пропускаем инициализацию FAISS: эмбеддинги недоступны (%s)",
+                self._embedding_error or "unknown error",
+            )
+            self._init_bm25_only_retriever()
+            return
+
         index_path = Path(settings.index_path)
         
         logger.info(f"Проверка FAISS индекса по пути: {index_path}")
@@ -213,6 +248,13 @@ class RAGSystem:
             # Разбивка на чанки
             chunks = split_documents(self.documents)
             
+            if not self.embeddings:
+                logger.warning("Эмбеддинги недоступны, используем только BM25")
+                self.vector_store = None
+                self.retriever = BM25Retriever.from_documents(chunks)
+                self._update_stats(chunks)
+                return
+
             # Создание векторного хранилища
             self.vector_store = FAISS.from_documents(chunks, self.embeddings)
             
@@ -365,7 +407,19 @@ class RAGSystem:
                 logger.warning("Retriever не инициализирован, используем прямой поиск по векторному хранилищу")
                 chunks = self.vector_store.similarity_search(question, k=5) if self.vector_store else []
             else:
-                chunks = self.retriever.invoke(question)
+                try:
+                    chunks = self.retriever.invoke(question)
+                except Exception as retriever_error:
+                    logger.error("Ошибка retriever.invoke, fallback на BM25: %s", retriever_error)
+                    if self.documents:
+                        fallback_chunks = split_documents(self.documents)
+                        if fallback_chunks:
+                            bm25 = BM25Retriever.from_documents(fallback_chunks)
+                            chunks = bm25.invoke(question)
+                        else:
+                            chunks = []
+                    else:
+                        chunks = []
             context = format_documents(chunks)
             
             # Формируем финальный промпт из шаблона
